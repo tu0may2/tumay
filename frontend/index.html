@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Казначейский терминал</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar__brand">
+      <span class="topbar__logo">₽</span>
+      <div>
+        <h1>Казначейский терминал</h1>
+        <p class="topbar__subtitle">Открытые данные MOEX · Банк России · НРД</p>
+      </div>
+    </div>
+
+    <div class="ticker" id="ticker" aria-label="Ключевые индикаторы"></div>
+
+    <div class="topbar__actions">
+      <span class="status" id="status" title="Время последнего среза">—</span>
+      <button class="btn" id="btn-refresh" type="button">Обновить</button>
+      <button class="btn btn--primary" id="btn-collect" type="button">Собрать данные</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab tab--active" data-view="overview" type="button">Обзор рынка</button>
+    <button class="tab" data-view="instruments" type="button">Инструменты</button>
+    <button class="tab" data-view="bonds" type="button">Облигации</button>
+    <button class="tab" data-view="portfolio" type="button">Портфель</button>
+    <button class="tab" data-view="signals" type="button">Сигналы</button>
+    <button class="tab" data-view="sources" type="button">Источники</button>
+  </nav>
+
+  <main id="main">
+    <!-- Обзор рынка -->
+    <section class="view view--active" id="view-overview">
+      <div class="kpi-grid" id="kpi-grid"></div>
+
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head">
+            <h2>Кривая бескупонной доходности</h2>
+            <span class="card__hint" id="curve-date"></span>
+          </header>
+          <div class="card__body" id="curve-chart"></div>
+          <p class="card__note">Безрисковый ориентир: доходность ОФЗ по срокам. Премия корпоративной бумаги к этой кривой — мера кредитного риска.</p>
+        </article>
+
+        <article class="card">
+          <header class="card__head">
+            <h2>Ключевая ставка и RUONIA</h2>
+            <span class="card__hint">за 12 месяцев</span>
+          </header>
+          <div class="card__body" id="rates-chart"></div>
+          <p class="card__note">Стоимость фондирования: ориентир для решения «размещать или занимать».</p>
+        </article>
+      </div>
+
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head"><h2>Лидеры роста</h2></header>
+          <div class="card__body" id="gainers"></div>
+        </article>
+        <article class="card">
+          <header class="card__head"><h2>Лидеры падения</h2></header>
+          <div class="card__body" id="losers"></div>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Самые ликвидные бумаги</h2>
+          <span class="card__hint">по обороту за сессию</span>
+        </header>
+        <div class="card__body table-wrap" id="top-liquid"></div>
+      </article>
+    </section>
+
+    <!-- Инструменты -->
+    <section class="view" id="view-instruments">
+      <article class="card">
+        <header class="card__head">
+          <h2>Отбор инструментов</h2>
+          <span class="card__hint" id="instruments-count"></span>
+        </header>
+        <div class="filters">
+          <label class="field">
+            <span>Поиск</span>
+            <input type="search" id="f-search" placeholder="Код, название или ISIN">
+          </label>
+          <label class="field">
+            <span>Тип</span>
+            <select id="f-kind">
+              <option value="share">Акции</option>
+              <option value="bond">Облигации</option>
+              <option value="index">Индексы</option>
+              <option value="currency">Валюта</option>
+              <option value="">Все</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Оборот от, млн ₽</span>
+            <input type="number" id="f-turnover" min="0" step="1" value="0">
+          </label>
+          <label class="field">
+            <span>Ликвидность от</span>
+            <input type="number" id="f-liquidity" min="0" max="100" step="5" value="0">
+          </label>
+          <label class="field">
+            <span>Сортировка</span>
+            <select id="f-sort">
+              <option value="turnover">Оборот</option>
+              <option value="liquidity_score">Ликвидность</option>
+              <option value="change_pct">Изменение</option>
+              <option value="num_trades">Число сделок</option>
+              <option value="capitalization">Капитализация</option>
+            </select>
+          </label>
+        </div>
+        <div class="card__body table-wrap" id="instruments-table"></div>
+      </article>
+    </section>
+
+    <!-- Облигации -->
+    <section class="view" id="view-bonds">
+      <article class="card">
+        <header class="card__head">
+          <h2>Подбор облигаций</h2>
+          <span class="card__hint" id="bonds-count"></span>
+        </header>
+        <div class="filters">
+          <label class="field">
+            <span>Поиск</span>
+            <input type="search" id="b-search" placeholder="Код, эмитент или ISIN">
+          </label>
+          <label class="field">
+            <span>Доходность от, %</span>
+            <input type="number" id="b-minyield" step="0.5" value="0">
+          </label>
+          <label class="field">
+            <span>Доходность до, %</span>
+            <input type="number" id="b-maxyield" step="0.5" placeholder="без ограничения">
+          </label>
+          <label class="field">
+            <span>Дюрация до, лет</span>
+            <input type="number" id="b-maxdur" step="0.5" placeholder="без ограничения">
+          </label>
+          <label class="field">
+            <span>Оборот от, млн ₽</span>
+            <input type="number" id="b-turnover" min="0" step="1" value="1">
+          </label>
+          <label class="field">
+            <span>Сортировка</span>
+            <select id="b-sort">
+              <option value="turnover">Оборот</option>
+              <option value="spread_to_curve_bp">Премия к КБД</option>
+              <option value="yield_pct">Доходность</option>
+              <option value="duration_years">Дюрация</option>
+            </select>
+          </label>
+        </div>
+        <div class="card__body table-wrap" id="bonds-table"></div>
+        <p class="card__note">Премия к КБД показывает, сколько базисных пунктов бумага платит сверх безрисковой кривой на своей дюрации. Умеренная премия — плата за кредитный риск, премия свыше 1000 бп (помечена ⚠) почти всегда сигнализирует о проблемах эмитента, а не о выгодной покупке. Сверяйте с уровнем листинга и оборотом.</p>
+      </article>
+    </section>
+
+    <!-- Портфель -->
+    <section class="view" id="view-portfolio">
+      <div class="kpi-grid" id="portfolio-kpi"></div>
+
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head"><h2>Структура портфеля</h2></header>
+          <div class="card__body" id="allocation-chart"></div>
+        </article>
+        <article class="card">
+          <header class="card__head">
+            <h2>Чувствительность к ставке</h2>
+            <span class="card__hint">переоценка облигаций</span>
+          </header>
+          <div class="card__body" id="sensitivity-chart"></div>
+          <p class="card__note">Оценка первого порядка: ΔV ≈ −Дюрация × Δставки × Стоимость.</p>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card__head"><h2>Позиции</h2></header>
+        <div class="card__body table-wrap" id="positions-table"></div>
+      </article>
+
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head"><h2>Новая сделка</h2></header>
+          <form class="card__body deal-form" id="deal-form">
+            <label class="field">
+              <span>Инструмент</span>
+              <input id="d-secid" required placeholder="SBER" autocomplete="off">
+            </label>
+            <label class="field">
+              <span>Направление</span>
+              <select id="d-side">
+                <option value="buy">Покупка</option>
+                <option value="sell">Продажа</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Количество</span>
+              <input id="d-qty" type="number" step="any" min="0.000001" required>
+            </label>
+            <label class="field">
+              <span>Цена</span>
+              <input id="d-price" type="number" step="any" min="0.000001" required>
+            </label>
+            <label class="field">
+              <span>НКД на бумагу</span>
+              <input id="d-nkd" type="number" step="any" min="0" value="0">
+            </label>
+            <label class="field">
+              <span>Комиссия</span>
+              <input id="d-fee" type="number" step="any" min="0" value="0">
+            </label>
+            <label class="field">
+              <span>Дата</span>
+              <input id="d-date" type="date" required>
+            </label>
+            <label class="field">
+              <span>Портфель</span>
+              <input id="d-portfolio" value="Основной">
+            </label>
+            <div class="deal-form__actions">
+              <button class="btn btn--primary" type="submit">Добавить сделку</button>
+              <span class="form-msg" id="deal-msg"></span>
+            </div>
+          </form>
+          <p class="card__note">Облигации вводятся в процентах от номинала, акции — в рублях за штуку.</p>
+        </article>
+
+        <article class="card">
+          <header class="card__head"><h2>Журнал сделок</h2></header>
+          <div class="card__body table-wrap" id="deals-table"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- Сигналы -->
+    <section class="view" id="view-signals">
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head">
+            <h2>Сигналы</h2>
+            <span class="card__hint">требуют внимания</span>
+          </header>
+          <div class="card__body" id="alerts-list"></div>
+        </article>
+        <article class="card">
+          <header class="card__head">
+            <h2>Аномалии объёма</h2>
+            <span class="card__hint">отклонение от собственной нормы</span>
+          </header>
+          <div class="card__body table-wrap" id="anomalies-table"></div>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Календарь выплат</h2>
+          <span class="card__hint">купоны, амортизации и оферты по данным НРД</span>
+        </header>
+        <div class="card__body table-wrap" id="calendar-table"></div>
+      </article>
+    </section>
+
+    <!-- Источники -->
+    <section class="view" id="view-sources">
+      <div class="grid grid--2" id="sources-grid"></div>
+      <article class="card">
+        <header class="card__head">
+          <h2>Журнал сбора данных</h2>
+          <span class="card__hint">что и когда загружалось</span>
+        </header>
+        <div class="card__body table-wrap" id="runs-table"></div>
+      </article>
+    </section>
+  </main>
+
+  <!-- Карточка инструмента -->
+  <div class="drawer" id="drawer" hidden>
+    <div class="drawer__backdrop" data-close></div>
+    <aside class="drawer__panel" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+      <header class="drawer__head">
+        <div>
+          <h2 id="drawer-title">—</h2>
+          <p class="drawer__sub" id="drawer-sub"></p>
+        </div>
+        <button class="btn btn--ghost" type="button" data-close aria-label="Закрыть">✕</button>
+      </header>
+      <div class="drawer__body" id="drawer-body"></div>
+    </aside>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/static/js/format.js"></script>
+  <script src="/static/js/api.js"></script>
+  <script src="/static/js/charts.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

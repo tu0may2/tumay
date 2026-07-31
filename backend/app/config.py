@@ -1,0 +1,65 @@
+"""Конфигурация приложения казначейства."""
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+
+class Settings(BaseSettings):
+    """Настройки, читаются из окружения (префикс TREASURY_) или .env."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="TREASURY_", env_file=".env", extra="ignore"
+    )
+
+    app_name: str = "Казначейский терминал"
+    debug: bool = False
+
+    # Хранилище
+    database_url: str = f"sqlite:///{BASE_DIR / 'treasury.db'}"
+
+    # Внешние источники
+    moex_base_url: str = "https://iss.moex.com/iss"
+    cbr_base_url: str = "https://www.cbr.ru"
+    nsd_base_url: str = "https://www.nsd.ru"
+
+    http_timeout: float = 30.0
+    http_retries: int = 3
+    http_backoff: float = 1.5
+    # Максимум одновременных запросов к одному источнику
+    http_concurrency: int = 4
+
+    # Сбор данных
+    collect_on_startup: bool = True
+    scheduler_enabled: bool = True
+    # Периодичность сбора рыночного среза, сек
+    quotes_interval_sec: int = 300
+    # Периодичность сбора справочников и кривой, сек
+    reference_interval_sec: int = 3600
+    # Глубина истории при первичной загрузке, дней
+    history_depth_days: int = 180
+
+    # Какие рынки собираем: board -> описание
+    shares_board: str = "TQBR"
+    bonds_boards: tuple[str, ...] = ("TQOB", "TQCB")
+    index_board: str = "SNDX"
+    fx_board: str = "CETS"
+
+    # Ограничение на число инструментов в срезе (0 = без ограничения)
+    max_instruments_per_board: int = 0
+
+    @property
+    def frontend_dir(self) -> Path:
+        return BASE_DIR / "frontend"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
