@@ -357,7 +357,8 @@ def _map_bar(row: dict[str, Any]) -> dict:
         "turnover": to_float(row.get("VALUE")),
         "num_trades": to_int(row.get("NUMTRADES")),
         "accrued_interest": to_float(row.get("ACCINT")),
-        "yield_close": to_float(row.get("YIELDCLOSE")),
+        # У индексов доходность приходит в поле YIELD, у облигаций — YIELDCLOSE
+        "yield_close": to_float(row.get("YIELDCLOSE")) or to_float(row.get("YIELD")),
         "yield_at_wap": to_float(row.get("YIELDATWAP")),
         "duration_days": to_int(row.get("DURATION")),
         "face_value": to_float(row.get("FACEVALUE")),

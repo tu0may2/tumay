@@ -141,6 +141,10 @@
           <h2>Анализ облигаций</h2>
           <div class="card__tools">
             <span class="card__hint" id="analysis-count"></span>
+            <select id="a-screens" class="btn btn--sm" title="Сохранённые отборы">
+              <option value="">Сохранённые отборы…</option>
+            </select>
+            <button class="btn btn--sm" id="a-save-screen" type="button">Сохранить отбор</button>
             <button class="btn btn--sm" id="analysis-xlsx" type="button">Excel</button>
             <button class="btn btn--sm" id="analysis-csv" type="button">CSV</button>
           </div>
@@ -234,6 +238,12 @@
           </label>
         </div>
 
+        <div class="card__body" id="market-map"></div>
+        <p class="card__note" style="border-bottom:1px solid var(--border-soft)">
+          Карта рынка: по горизонтали — дюрация, по вертикали — доходность, размер точки — оборот,
+          цвет — уровень риска. Точки выше общего облака платят больше при той же дюрации.
+          Нажмите на точку, чтобы открыть карточку выпуска.
+        </p>
         <div class="card__body table-wrap" id="analysis-table"></div>
         <p class="card__note">
           Все показатели рассчитаны по данным первоисточников: цены, доходности, дюрация и объёмы — Московская биржа (ISS),
@@ -323,6 +333,62 @@ SU26238RMFS4
         </article>
       </div>
 
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head">
+            <h2>Календарь поступлений</h2>
+            <span class="card__hint" id="cashflow-total"></span>
+          </header>
+          <div class="card__body" id="cashflow-chart"></div>
+          <div class="card__body table-wrap" id="cashflow-table" style="max-height:260px"></div>
+          <p class="card__note">Купоны, амортизации и погашения по вашим позициям, приведённые к рублю.</p>
+        </article>
+
+        <article class="card">
+          <header class="card__head">
+            <h2>Сравнение с рынком</h2>
+            <span class="card__hint">за 90 дней</span>
+          </header>
+          <div class="card__body" id="benchmark-body"></div>
+          <p class="card__note">Доходность считается по текущему составу портфеля и не учитывает сделки внутри периода.</p>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Лимиты</h2>
+          <div class="card__tools">
+            <span class="card__hint" id="limits-status"></span>
+            <button class="btn btn--sm" id="limit-add" type="button">Установить лимит</button>
+          </div>
+        </header>
+        <form class="filters" id="limit-form" hidden>
+          <label class="field">
+            <span>Вид лимита</span>
+            <select id="l-kind"></select>
+          </label>
+          <label class="field">
+            <span>К чему относится</span>
+            <input id="l-target" placeholder="код, эмитент, валюта…">
+          </label>
+          <label class="field">
+            <span>Предельное значение</span>
+            <input id="l-value" type="number" step="any" min="0" required>
+          </label>
+          <label class="field">
+            <span>Комментарий</span>
+            <input id="l-comment" placeholder="необязательно">
+          </label>
+          <div class="deal-form__actions">
+            <button class="btn btn--primary btn--sm" type="submit">Сохранить</button>
+            <button class="btn btn--sm" type="button" id="limit-cancel">Отмена</button>
+            <span class="form-msg" id="limit-msg"></span>
+          </div>
+        </form>
+        <div class="card__body table-wrap" id="limits-table" style="max-height:340px"></div>
+        <p class="card__note">Лимиты проверяются по текущим позициям. Проверка новой сделки — в форме ниже: перед добавлением видно, выйдет ли портфель за ограничения.</p>
+      </article>
+
       <article class="card">
         <header class="card__head"><h2>Позиции</h2></header>
         <div class="card__body table-wrap" id="positions-table"></div>
@@ -369,6 +435,7 @@ SU26238RMFS4
             </label>
             <div class="deal-form__actions">
               <button class="btn btn--primary" type="submit">Добавить сделку</button>
+              <button class="btn" type="button" id="deal-check">Проверить лимиты</button>
               <span class="form-msg" id="deal-msg"></span>
             </div>
           </form>
@@ -400,6 +467,17 @@ SU26238RMFS4
           <div class="card__body table-wrap" id="anomalies-table"></div>
         </article>
       </div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Список наблюдения</h2>
+          <div class="card__tools">
+            <input id="w-secid" placeholder="Код бумаги" style="padding:5px 9px;background:var(--bg);border:1px solid var(--border);border-radius:7px;color:var(--text)">
+            <button class="btn btn--sm" id="w-add" type="button">Добавить</button>
+          </div>
+        </header>
+        <div class="card__body table-wrap" id="watchlist-table" style="max-height:320px"></div>
+      </article>
 
       <article class="card">
         <header class="card__head">

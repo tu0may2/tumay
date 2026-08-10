@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     Float,
@@ -52,6 +53,10 @@ class Instrument(Base):
     list_level: Mapped[int | None] = mapped_column(Integer)
     sector: Mapped[str | None] = mapped_column(String(64))
     sec_type: Mapped[str | None] = mapped_column(String(16))
+    # Эмитент нужен для лимитов: несколько выпусков одного заёмщика
+    # складываются в общий риск на него
+    issuer: Mapped[str | None] = mapped_column(String(256), index=True)
+    issuer_inn: Mapped[str | None] = mapped_column(String(16))
 
     # Только для облигаций
     maturity_date: Mapped[date | None] = mapped_column(Date)
@@ -268,6 +273,61 @@ class Deal(Base):
     trade_date: Mapped[date] = mapped_column(Date, index=True)
     counterparty: Mapped[str | None] = mapped_column(String(128))
     comment: Mapped[str | None] = mapped_column(Text)
+    # Курс валюты сделки к рублю на дату сделки. Нужен, чтобы отделить
+    # ценовой результат от валютного: без него переоценка валютной бумаги
+    # смешивает движение цены и движение курса.
+    fx_rate: Mapped[float | None] = mapped_column(Float)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Limit(Base):
+    """Лимит казначейства: ограничение, которое портфель не должен нарушать."""
+
+    __tablename__ = "limits"
+    __table_args__ = (
+        UniqueConstraint("portfolio", "kind", "target", name="uq_limit_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio: Mapped[str] = mapped_column(String(64), default="Основной", index=True)
+    #: instrument_share | issuer_share | currency_share | list_level_share
+    #: | illiquid_share | duration_max | duration_min | position_value
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    #: К чему относится: код бумаги, имя эмитента, код валюты, уровень листинга.
+    #: Пусто для лимитов на портфель целиком (дюрация, доля неликвида).
+    target: Mapped[str | None] = mapped_column(String(256))
+    #: Предельное значение: доля в процентах, годы дюрации или сумма в рублях
+    value: Mapped[float] = mapped_column(Float)
+    comment: Mapped[str | None] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class SavedScreen(Base):
+    """Сохранённый набор фильтров, чтобы не набирать отбор заново."""
+
+    __tablename__ = "saved_screens"
+    __table_args__ = (UniqueConstraint("view", "name", name="uq_screen_view_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: К какому экрану относится: bonds | instruments
+    view: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    #: Значения фильтров как есть, JSON-строкой
+    params: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class WatchItem(Base):
+    """Бумага в списке наблюдения."""
+
+    __tablename__ = "watchlist"
+    __table_args__ = (UniqueConstraint("secid", "watchlist", name="uq_watch_secid"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    secid: Mapped[str] = mapped_column(String(64), index=True)
+    watchlist: Mapped[str] = mapped_column(String(64), default="Основной", index=True)
+    note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

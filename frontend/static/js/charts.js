@@ -316,6 +316,106 @@
     return svg;
   }
 
+  /**
+   * Точечная диаграмма — карта рынка.
+   * points: [{ x, y, size, color, label, key }]
+   */
+  function scatterChart(container, points, options = {}) {
+    const opts = Object.assign(
+      {
+        height: 420,
+        xFormat: (v) => fmt.num(v, 1),
+        yFormat: (v) => fmt.num(v, 1),
+        xTitle: '',
+        yTitle: '',
+        onPick: null,
+      },
+      options
+    );
+
+    const data = (points || []).filter(
+      (p) => fmt.isNum(p.x) && fmt.isNum(p.y)
+    );
+    if (!data.length) return empty(container, opts.emptyMessage);
+
+    const svg = createSvg(container, opts.height);
+    const geom = { left: 58, top: 14, w: VIEW_W - 58 - 16, h: opts.height - 14 - 34 };
+
+    const xBounds = niceBounds(Math.min(...data.map((p) => p.x)), Math.max(...data.map((p) => p.x)));
+    const yBounds = niceBounds(Math.min(...data.map((p) => p.y)), Math.max(...data.map((p) => p.y)));
+
+    const scaleX = (x) =>
+      geom.left + ((x - xBounds.min) / (xBounds.max - xBounds.min)) * geom.w;
+    const scaleY = (y) =>
+      geom.top + geom.h - ((y - yBounds.min) / (yBounds.max - yBounds.min)) * geom.h;
+
+    drawGrid(svg, geom, yBounds.min, yBounds.max, opts.yFormat);
+
+    // Вертикальная сетка по оси X
+    for (let i = 0; i <= 5; i += 1) {
+      const value = xBounds.min + ((xBounds.max - xBounds.min) * i) / 5;
+      const x = scaleX(value);
+      svg.appendChild(
+        el('line', { class: 'chart__grid', x1: x, x2: x, y1: geom.top, y2: geom.top + geom.h })
+      );
+      svg.appendChild(
+        el('text', {
+          class: 'chart__axis', x, y: opts.height - 18, 'text-anchor': 'middle',
+        }, opts.xFormat(value))
+      );
+    }
+
+    // Размер точки — по обороту: масштабируем по корню, иначе крупные
+    // выпуски закрывают собой всё поле
+    const sizes = data.map((p) => p.size || 0).filter((value) => value > 0);
+    const maxSize = sizes.length ? Math.max(...sizes) : 1;
+
+    data.forEach((point) => {
+      const radius = point.size
+        ? 3 + Math.sqrt(point.size / maxSize) * 11
+        : 4;
+      const circle = el('circle', {
+        cx: scaleX(point.x),
+        cy: scaleY(point.y),
+        r: radius.toFixed(1),
+        fill: point.color || 'var(--accent)',
+        'fill-opacity': 0.62,
+        stroke: point.color || 'var(--accent)',
+        'stroke-opacity': 0.9,
+        'stroke-width': 1,
+        style: opts.onPick ? 'cursor:pointer' : null,
+      });
+      circle.appendChild(el('title', {}, point.label || ''));
+      if (opts.onPick && point.key) {
+        circle.addEventListener('click', () => opts.onPick(point.key));
+      }
+      svg.appendChild(circle);
+    });
+
+    if (opts.xTitle) {
+      svg.appendChild(
+        el('text', {
+          class: 'chart__label',
+          x: geom.left + geom.w / 2,
+          y: opts.height - 3,
+          'text-anchor': 'middle',
+        }, opts.xTitle)
+      );
+    }
+    if (opts.yTitle) {
+      svg.appendChild(
+        el('text', {
+          class: 'chart__label',
+          x: 12,
+          y: geom.top + geom.h / 2,
+          'text-anchor': 'middle',
+          transform: `rotate(-90 12 ${geom.top + geom.h / 2})`,
+        }, opts.yTitle)
+      );
+    }
+    return svg;
+  }
+
   /** Горизонтальные полосы: структура портфеля, сценарии ставок. */
   function barsHorizontal(container, items, options = {}) {
     const opts = Object.assign(
@@ -355,5 +455,5 @@
     container.appendChild(wrap);
   }
 
-  global.charts = { lineChart, barChart, priceVolumeChart, barsHorizontal, empty };
+  global.charts = { lineChart, barChart, priceVolumeChart, scatterChart, barsHorizontal, empty };
 })(window);

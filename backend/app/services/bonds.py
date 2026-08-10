@@ -218,9 +218,15 @@ def analyse(
         ).scalars():
             actions_by_isin[action.isin].append(action)
 
+    from .fx import FxBook, instrument_currency
+
+    fx = FxBook(session)
     rows: list[dict[str, Any]] = []
     for instrument, quote in rows_raw:
-        row = build_row(instrument, quote, curve["points"])
+        row = build_row(
+            instrument, quote, curve["points"],
+            fx_rate=fx.rate(instrument_currency(instrument)) or 1.0,
+        )
         profile = _coupon_profile(
             actions_by_isin.get(instrument.isin or "", []), instrument
         )

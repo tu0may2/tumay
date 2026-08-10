@@ -20,6 +20,7 @@ from ..config import settings
 from ..db import session_scope
 from ..models import (
     Bar,
+    Deal,
     CollectionRun,
     CorpAction,
     CurvePoint,
@@ -27,8 +28,10 @@ from ..models import (
     Instrument,
     MacroRate,
     Quote,
+    WatchItem,
 )
 from ..sources import CbrSource, MoexSource, NsdSource
+from ..sources.base import rows_to_dicts
 from .analytics import latest_quote_ids
 
 logger = logging.getLogger(__name__)
@@ -289,6 +292,120 @@ class Collector:
                 )
             return counter["rows"]
 
+    async def collect_benchmarks(self) -> int:
+        """История индексов-ориентиров: нужна для сравнения портфеля."""
+        from .benchmark import BENCHMARKS
+
+        start_date = date.today() - timedelta(days=settings.history_depth_days)
+        end_date = date.today()
+
+        with self._run("moex", "benchmarks") as counter:
+            written = 0
+            async with MoexSource() as moex:
+                for secid, _ in BENCHMARKS:
+                    try:
+                        bars = await moex.fetch_history(
+                            settings.index_board, secid, start_date, end_date
+                        )
+                    except Exception as exc:  # noqa: BLE001 — индекс не критичен
+                        logger.warning("Индекс %s недоступен: %s", secid, exc)
+                        continue
+                    if not bars:
+                        continue
+
+                    with session_scope() as session:
+                        instrument = session.execute(
+                            select(Instrument).where(
+                                Instrument.secid == secid,
+                                Instrument.board == settings.index_board,
+                            )
+                        ).scalar_one_or_none()
+                        if instrument is None:
+                            instrument = Instrument(
+                                secid=secid,
+                                board=settings.index_board,
+                                engine="stock",
+                                market="index",
+                                kind="index",
+                                short_name=secid,
+                            )
+                            session.add(instrument)
+                            session.flush()
+
+                        rows = [{"instrument_id": instrument.id, **bar} for bar in bars]
+                        written += _upsert(
+                            session,
+                            Bar,
+                            rows,
+                            ("instrument_id", "trade_date"),
+                            ("close", "wa_price", "volume", "turnover", "yield_close",
+                             "duration_days"),
+                        )
+            counter["rows"] = written
+            return written
+
+    async def collect_issuers(self, limit: int = 60) -> int:
+        """Эмитенты бумаг из портфеля — основа лимита на заёмщика.
+
+        Справочник эмитентов отдаётся по одной бумаге за запрос, поэтому
+        заполняем его точечно: только для того, что реально в портфеле.
+        """
+        with session_scope() as session:
+            secids = [
+                row[0]
+                for row in session.execute(
+                    select(Deal.secid).distinct()
+                ).all()
+            ]
+            if not secids:
+                return 0
+            pending = [
+                row[0]
+                for row in session.execute(
+                    select(Instrument.secid).where(
+                        Instrument.secid.in_(secids), Instrument.issuer.is_(None)
+                    )
+                ).all()
+            ][:limit]
+
+        if not pending:
+            return 0
+
+        with self._run("moex", "issuers") as counter:
+            found: dict[str, tuple[str, str | None]] = {}
+            async with MoexSource() as moex:
+                semaphore = asyncio.Semaphore(settings.http_concurrency)
+
+                async def _one(secid: str) -> None:
+                    async with semaphore:
+                        try:
+                            payload = await moex.get_json(
+                                "/securities.json",
+                                **{"iss.meta": "off", "q": secid, "limit": 5,
+                                   "iss.only": "securities"},
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("Эмитент %s не получен: %s", secid, exc)
+                            return
+                        for row in rows_to_dicts(payload.get("securities")):
+                            if (row.get("secid") or "").upper() == secid.upper():
+                                title = row.get("emitent_title")
+                                if title:
+                                    found[secid] = (title, row.get("emitent_inn"))
+                                return
+
+                await asyncio.gather(*(_one(secid) for secid in pending))
+
+            with session_scope() as session:
+                for secid, (title, inn) in found.items():
+                    for instrument in session.execute(
+                        select(Instrument).where(Instrument.secid == secid)
+                    ).scalars():
+                        instrument.issuer = title
+                        instrument.issuer_inn = inn
+            counter["rows"] = len(found)
+            return len(found)
+
     async def collect_all(self, *, with_history: bool = True) -> dict[str, int]:
         """Полный цикл сбора. Ошибка одного шага не отменяет остальные."""
         async with self._lock:
@@ -299,7 +416,9 @@ class Collector:
             ]
             if with_history:
                 steps.append(("history", self.collect_history()))
+                steps.append(("benchmarks", self.collect_benchmarks()))
             steps.append(("corp_actions", self.collect_corp_actions()))
+            steps.append(("issuers", self.collect_issuers()))
 
             for name, coro in steps:
                 try:
@@ -378,22 +497,68 @@ def _history_targets(
     # Иначе — самые оборотистые бумаги последнего среза.
     # Площадки снимаются параллельно и получают разные ts, поэтому единого
     # «последнего ts» нет: берём последнюю котировку по каждому инструменту.
-    statement = (
-        select(Instrument.id, Instrument.secid, Instrument.board)
-        .join(Quote, Quote.instrument_id == Instrument.id)
-        .where(
-            Quote.id.in_(latest_quote_ids(session)),
-            Quote.turnover.isnot(None),
-            Instrument.kind.in_(("share", "bond")),
+    #
+    # Акции и облигации отбираем отдельными квотами: по обороту акции
+    # вытесняют облигации почти полностью, и тогда по облигациям не с чем
+    # считать историю премии и доходности.
+    def _top(kind: str, limit: int) -> list[tuple[int, str, str]]:
+        statement = (
+            select(Instrument.id, Instrument.secid, Instrument.board)
+            .join(Quote, Quote.instrument_id == Instrument.id)
+            .where(
+                Quote.id.in_(latest_quote_ids(session)),
+                Quote.turnover.isnot(None),
+                Quote.turnover > 0,
+                Instrument.kind == kind,
+            )
+            .order_by(Quote.turnover.desc())
+            .limit(limit)
         )
-        .order_by(Quote.turnover.desc())
-        .limit(top_by_turnover)
-    )
-    return [tuple(row) for row in session.execute(statement).all()]
+        return [tuple(row) for row in session.execute(statement).all()]
+
+    half = max(1, top_by_turnover // 2)
+    targets = _top("share", half) + _top("bond", top_by_turnover - half)
+
+    # Свои бумаги и наблюдаемые нужны всегда, даже если они неликвидны
+    watched = session.execute(
+        select(Instrument.id, Instrument.secid, Instrument.board).where(
+            Instrument.secid.in_(
+                select(Deal.secid).distinct().union(select(WatchItem.secid).distinct())
+            )
+        )
+    ).all()
+
+    seen: set[int] = set()
+    result: list[tuple[int, str, str]] = []
+    for row in [tuple(item) for item in watched] + targets:
+        if row[0] in seen:
+            continue
+        seen.add(row[0])
+        result.append(row)
+    return result
 
 
 def _bond_targets(session: Session, limit: int) -> list[tuple[str, str]]:
-    """Облигации с ISIN, по которым имеет смысл тянуть график выплат."""
+    """Облигации с ISIN, по которым имеет смысл тянуть график выплат.
+
+    Бумаги из портфеля берём всегда: без их графика не посчитать ни купонный
+    доход, ни календарь поступлений, а по обороту они могут не попасть в
+    список ликвидных.
+    """
+    owned = [
+        (isin, secid)
+        for isin, secid in session.execute(
+            select(Instrument.isin, Instrument.secid)
+            .where(
+                Instrument.kind == "bond",
+                Instrument.isin.isnot(None),
+                Instrument.secid.in_(select(Deal.secid).distinct()),
+            )
+            .distinct()
+        ).all()
+        if isin
+    ]
+
     has_quotes = session.execute(select(func.count()).select_from(Quote)).scalar()
     statement = select(Instrument.isin, Instrument.secid).where(
         Instrument.kind == "bond", Instrument.isin.isnot(None)
@@ -405,11 +570,20 @@ def _bond_targets(session: Session, limit: int) -> list[tuple[str, str]]:
             .where(Quote.id.in_(latest_quote_ids(session)))
             .order_by(Quote.turnover.desc().nullslast())
         )
-    return [
+    liquid = [
         (isin, secid)
         for isin, secid in session.execute(statement.limit(limit)).all()
         if isin
     ]
+    # Свои бумаги первыми, дальше ликвидные, без повторов
+    seen: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for isin, secid in owned + liquid:
+        if isin in seen:
+            continue
+        seen.add(isin)
+        result.append((isin, secid))
+    return result
 
 
 # Единственный экземпляр на приложение

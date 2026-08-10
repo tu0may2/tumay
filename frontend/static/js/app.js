@@ -12,6 +12,8 @@
     bondFiltersLoaded: false,
     bondMode: 'screen',
     analysisLoaded: false,
+    screens: [],
+    limitKinds: [],
   };
 
   const THEME_KEY = 'treasury-theme';
@@ -527,6 +529,8 @@
         onRowClick: openInstrument,
         emptyMessage: 'Нет выпусков под заданные условия — ослабьте фильтры',
       });
+
+      renderMarketMap(data.items);
     } catch (error) {
       failure(container, error);
     }
@@ -541,6 +545,106 @@
     } catch (error) {
       toast(error.message, true);
     }
+  }
+
+  /** Карта рынка: дюрация × доходность, размер — оборот, цвет — риск. */
+  function renderMarketMap(items) {
+    const RISK_COLORS = {
+      'низкий': 'var(--up)',
+      'умеренный': 'var(--accent)',
+      'повышенный': 'var(--warn)',
+      'высокий': 'var(--down)',
+    };
+    // Экстремальные доходности сжимают всё облако в полоску у нуля,
+    // поэтому на карте показываем разумный диапазон
+    const points = items
+      .filter((row) =>
+        fmt.isNum(row.duration_years) &&
+        fmt.isNum(row.yield_pct) &&
+        row.yield_pct < 60 &&
+        row.duration_years < 20
+      )
+      .map((row) => ({
+        x: row.duration_years,
+        y: row.yield_pct,
+        size: row.turnover || 0,
+        color: RISK_COLORS[row.risk_band] || 'var(--accent)',
+        key: row.secid,
+        label:
+          `${row.name || row.secid}\nДюрация: ${fmt.num(row.duration_years, 2)} л` +
+          `\nДоходность: ${fmt.pct(row.yield_pct)}` +
+          `\nПремия: ${fmt.bp(row.spread_to_curve_bp)}` +
+          `\nОборот: ${fmt.money(row.turnover)} ₽\nРиск: ${row.risk_band || '—'}`,
+      }));
+
+    charts.scatterChart($('#market-map'), points, {
+      height: 380,
+      xFormat: (v) => fmt.num(v, 1) + ' л',
+      yFormat: (v) => fmt.num(v, 1) + '%',
+      xTitle: 'Дюрация, лет',
+      yTitle: 'Доходность, %',
+      onPick: openInstrument,
+      emptyMessage: 'Недостаточно данных для карты',
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Сохранённые отборы
+  // ------------------------------------------------------------------
+  async function loadScreens() {
+    try {
+      const screens = await api.screens('bonds');
+      const select = $('#a-screens');
+      select.innerHTML =
+        '<option value="">Сохранённые отборы…</option>' +
+        screens
+          .map((item) => `<option value="${item.id}">${fmt.esc(item.name)}</option>`)
+          .join('');
+      state.screens = screens;
+    } catch (error) {
+      console.warn('Отборы не загружены:', error.message);
+    }
+  }
+
+  async function saveScreen() {
+    const name = prompt('Название отбора:');
+    if (!name) return;
+    try {
+      await api.saveScreen({ view: 'bonds', name, params: analysisParams() });
+      await loadScreens();
+      toast(`Отбор «${name}» сохранён`);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  function applyScreen(screenId) {
+    const screen = (state.screens || []).find((item) => String(item.id) === String(screenId));
+    if (!screen) return;
+    let params = {};
+    try {
+      params = JSON.parse(screen.params);
+    } catch (error) {
+      return toast('Не удалось прочитать сохранённый отбор', true);
+    }
+
+    const map = {
+      search: '#a-search', min_yield: '#a-minyield', max_yield: '#a-maxyield',
+      min_duration_years: '#a-mindur', max_duration_years: '#a-maxdur',
+      maturity_from: '#a-matfrom', maturity_to: '#a-matto',
+      max_risk_score: '#a-risk', sort_by: '#a-sort',
+      has_offer: '#a-offer', has_amortization: '#a-amort',
+    };
+    Object.entries(map).forEach(([key, selector]) => {
+      const node = $(selector);
+      if (node) node.value = params[key] === null || params[key] === undefined ? '' : params[key];
+    });
+    // Оборот хранится в рублях, а в поле вводится в миллионах
+    if ($('#a-turnover')) $('#a-turnover').value = (params.min_turnover || 0) / 1e6;
+    if (params.coupon_type && $('#a-coupon')) $('#a-coupon').value = params.coupon_type[0] || '';
+    if (params.list_level && $('#a-level')) $('#a-level').value = params.list_level[0] || '';
+    if (params.currency && $('#a-currency')) $('#a-currency').value = params.currency[0] || '';
+    renderAnalysis();
   }
 
   // ------------------------------------------------------------------
@@ -667,22 +771,37 @@
         api.deals({ name: state.portfolioName, limit: 100 }),
       ]);
 
+      const money = (value) => `<span class="${fmt.trendClass(value)}">${fmt.rub(value)}</span>`;
       const cards = [
-        { label: 'Стоимость портфеля', value: fmt.rub(summary.total_value), meta: `${summary.positions_open} ${fmt.plural(summary.positions_open, 'позиция', 'позиции', 'позиций')}` },
         {
-          label: 'Нереализованный P&L',
-          value: `<span class="${fmt.trendClass(summary.unrealized_pnl)}">${fmt.rub(summary.unrealized_pnl)}</span>`,
-          meta: fmt.signedPct(summary.unrealized_pnl_pct),
+          label: 'Стоимость портфеля',
+          value: fmt.rub(summary.total_value),
+          meta: `${summary.positions_open} ${fmt.plural(summary.positions_open, 'позиция', 'позиции', 'позиций')} · учёт ${summary.cost_method === 'fifo' ? 'ФИФО' : 'по средней'}`,
         },
         {
-          label: 'Реализованный P&L',
-          value: `<span class="${fmt.trendClass(summary.realized_pnl)}">${fmt.rub(summary.realized_pnl)}</span>`,
+          label: 'Ценовой результат',
+          value: money(summary.price_pnl),
+          meta: 'от движения котировок',
+        },
+        {
+          label: 'Валютный результат',
+          value: money(summary.fx_pnl),
+          meta: 'от переоценки курса',
+        },
+        {
+          label: 'Купонный доход',
+          value: money(summary.coupon_result),
+          meta: `получено купонов ${fmt.rub(summary.coupons_received)}`,
+        },
+        {
+          label: 'Реализованный',
+          value: money(summary.realized_pnl),
           meta: `комиссии ${fmt.rub(summary.fees)}`,
         },
         {
           label: 'Итого результат',
-          value: `<span class="${fmt.trendClass(summary.net_pnl)}">${fmt.rub(summary.net_pnl)}</span>`,
-          meta: 'с учётом комиссий',
+          value: money(summary.net_pnl),
+          meta: 'цена + курс + купоны − комиссии',
         },
         {
           label: 'Дюрация облигаций',
@@ -707,46 +826,52 @@
 
       charts.barsHorizontal(
         $('#allocation-chart'),
-        summary.allocation.map((item) => ({
-          label: KIND_TITLES[item.kind] || item.kind,
-          value: item.value,
-          share: item.share_pct,
-        })),
+        [
+          ...summary.allocation.map((item) => ({
+            label: item.title, value: item.value, share: item.share_pct,
+          })),
+          ...summary.allocation_currency
+            .filter((item) => item.key !== 'RUB')
+            .map((item) => ({
+              label: `Валюта ${item.title}`, value: item.value, share: item.share_pct,
+            })),
+        ],
         { valueFormat: (v) => fmt.money(v) + ' ₽', emptyMessage: 'Нет открытых позиций' }
       );
 
+      // Сценарии: параллельный сдвиг плюс изменение формы кривой
+      const tilt = state.curveTilt || 'scenarios';
       charts.barsHorizontal(
         $('#sensitivity-chart'),
-        sensitivity.scenarios.map((item) => ({
+        (sensitivity[tilt] || sensitivity.scenarios).map((item) => ({
           label: `${item.shift_bp > 0 ? '+' : ''}${item.shift_bp} бп`,
           value: item.impact_rub,
           share: item.impact_pct,
         })),
-        {
-          valueFormat: (v) => fmt.money(v) + ' ₽',
-          colorBySign: true,
-          emptyMessage: 'Нет облигаций в портфеле',
-        }
+        { valueFormat: (v) => fmt.money(v) + ' ₽', colorBySign: true,
+          emptyMessage: 'Нет облигаций в портфеле' }
       );
+      const durationNote = $('#sensitivity-note');
+      if (durationNote) {
+        durationNote.textContent = fmt.isNum(sensitivity.weighted_modified_duration)
+          ? `Мод. дюрация ${fmt.num(sensitivity.weighted_modified_duration, 2)}, выпуклость ${fmt.num(sensitivity.weighted_convexity, 1)}`
+          : '';
+      }
 
       renderTable($('#positions-table'), [
         { title: 'Бумага', render: (row) => secCell(row) },
+        { title: 'Вал.', render: (row) => `<span class="badge">${fmt.esc(row.currency)}</span>` },
         { title: 'Кол-во', className: 'num', render: (row) => fmt.int(row.quantity) },
         { title: 'Средняя', className: 'num', render: (row) => fmt.price(row.avg_price) },
         { title: 'Текущая', className: 'num', render: (row) => fmt.price(row.last_price) },
-        { title: 'Оценка, ₽', className: 'num', render: (row) => fmt.money(row.market_value) },
-        {
-          title: 'P&L, ₽',
-          className: 'num',
-          render: (row) => `<span class="${fmt.trendClass(row.unrealized_pnl)}">${fmt.money(row.unrealized_pnl)}</span>`,
-        },
-        {
-          title: 'P&L, %',
-          className: 'num',
-          render: (row) => `<span class="${fmt.trendClass(row.unrealized_pnl_pct)}">${fmt.signedPct(row.unrealized_pnl_pct)}</span>`,
-        },
+        { title: 'Оценка, ₽', className: 'num', render: (row) => fmt.money(row.market_value_rub) },
+        { title: 'Цена, ₽', className: 'num', render: (row) => `<span class="${fmt.trendClass(row.price_pnl_rub)}">${fmt.money(row.price_pnl_rub)}</span>` },
+        { title: 'Курс, ₽', className: 'num', render: (row) => (row.currency === 'RUB' ? '<span class="dim">—</span>' : `<span class="${fmt.trendClass(row.fx_pnl_rub)}">${fmt.money(row.fx_pnl_rub)}</span>`) },
+        { title: 'Купоны, ₽', className: 'num', render: (row) => `<span class="${fmt.trendClass(row.coupon_result_rub)}">${fmt.money(row.coupon_result_rub)}</span>` },
+        { title: 'Итого, ₽', className: 'num', render: (row) => `<b class="${fmt.trendClass(row.total_pnl_rub)}">${fmt.money(row.total_pnl_rub)}</b>` },
         { title: 'Доля', className: 'num', render: (row) => fmt.pct(row.weight_pct, 1) },
         { title: 'Дюрация', className: 'num', render: (row) => (fmt.isNum(row.duration_years) ? fmt.num(row.duration_years, 2) + ' л' : '—') },
+        { title: 'Выход', className: 'num', render: (row) => (fmt.isNum(row.days_to_exit) ? `${fmt.num(row.days_to_exit, 1)} дн` : '—') },
       ], summary.positions, {
         rowKey: (row) => row.secid,
         onRowClick: openInstrument,
@@ -783,8 +908,264 @@
           }
         });
       });
+
+      renderCashflow();
+      renderBenchmark();
+      renderLimits();
     } catch (error) {
       failure(kpi, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Денежные потоки портфеля
+  // ------------------------------------------------------------------
+  async function renderCashflow() {
+    const container = $('#cashflow-chart');
+    try {
+      const data = await api.cashflow(state.portfolioName, 365);
+      $('#cashflow-total').textContent = data.total_rub
+        ? `${fmt.money(data.total_rub)} ₽ за год`
+        : '';
+
+      charts.barChart(
+        container,
+        (data.by_month || []).map((item) => ({
+          x: item.month,
+          y: item.total_rub,
+          label: `${item.month}\nКупоны: ${fmt.money(item.coupon_rub)} ₽\nПогашения: ${fmt.money(item.amortization_rub)} ₽`,
+        })),
+        {
+          height: 180,
+          yFormat: (v) => fmt.money(v),
+          xFormat: (v) => String(v).slice(5) + '.' + String(v).slice(2, 4),
+          emptyMessage: 'Нет запланированных поступлений',
+        }
+      );
+
+      renderTable($('#cashflow-table'), [
+        { title: 'Дата', render: (row) => fmt.date(row.action_date) },
+        { title: 'Через', className: 'num', render: (row) => `${row.days_left} дн` },
+        { title: 'Бумага', render: (row) => secCell(row) },
+        { title: 'Тип', render: (row) => `<span class="badge">${ACTION_TITLES[row.action_type] || row.action_type}</span>` },
+        { title: 'Сумма, ₽', className: 'num', render: (row) => `<b>${fmt.money(row.amount_rub)}</b>` },
+      ], data.events, { emptyMessage: 'Выплат в горизонте года не найдено' });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Сравнение с рынком
+  // ------------------------------------------------------------------
+  async function renderBenchmark() {
+    const container = $('#benchmark-body');
+    try {
+      const data = await api.benchmark(state.portfolioName, 90);
+      const rows = [
+        {
+          title: 'Ваш портфель',
+          return_pct: data.portfolio_return_pct,
+          yield_pct: data.portfolio_yield_pct,
+          duration_years: data.portfolio_duration_years,
+          own: true,
+        },
+        ...data.benchmarks
+          .filter((item) => item.available)
+          .map((item) => ({
+            title: item.title,
+            return_pct: item.return_pct,
+            yield_pct: item.yield_pct,
+            duration_years: item.duration_years,
+            excess_pct: item.excess_pct,
+          })),
+      ];
+
+      renderTable(container, [
+        { title: 'Ориентир', render: (row) => (row.own ? `<b>${fmt.esc(row.title)}</b>` : fmt.esc(row.title)) },
+        { title: 'Доходность за период', className: 'num', render: (row) => `<span class="${fmt.trendClass(row.return_pct)}">${fmt.signedPct(row.return_pct)}</span>` },
+        { title: 'Разница', className: 'num', render: (row) => (row.own ? '<span class="dim">—</span>' : `<span class="${fmt.trendClass(row.excess_pct)}">${fmt.signedPct(row.excess_pct)}</span>`) },
+        { title: 'Доходность к погашению', className: 'num', render: (row) => fmt.pct(row.yield_pct) },
+        { title: 'Дюрация', className: 'num', render: (row) => (fmt.isNum(row.duration_years) ? fmt.num(row.duration_years, 2) + ' л' : '—') },
+      ], rows, { emptyMessage: 'Недостаточно истории для сравнения' });
+
+      if (fmt.isNum(data.coverage_pct) && data.coverage_pct < 99) {
+        container.insertAdjacentHTML(
+          'beforeend',
+          `<p class="card__note" style="border:none;padding:9px 0 0">В расчёт вошло ${fmt.pct(data.coverage_pct, 0)} стоимости портфеля: по остальным бумагам история ещё не загружена.</p>`
+        );
+      }
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Лимиты
+  // ------------------------------------------------------------------
+  async function renderLimits() {
+    const container = $('#limits-table');
+    try {
+      const data = await api.checkLimits(state.portfolioName);
+      $('#limits-status').textContent = data.limits_total
+        ? (data.breached
+            ? `нарушено ${data.breached} из ${data.limits_total}`
+            : `все ${data.limits_total} соблюдены`)
+        : 'лимиты не заданы';
+
+      renderTable(container, [
+        { title: 'Лимит', render: (row) => `<div class="sec"><span class="sec__code">${fmt.esc(row.kind_title)}</span><span class="sec__name">${fmt.esc(row.subject)}</span></div>` },
+        { title: 'Значение', className: 'num', render: (row) => `${fmt.num(row.limit_value, 2)} ${fmt.esc(row.unit)}` },
+        { title: 'Факт', className: 'num', render: (row) => `<b>${fmt.num(row.actual, 2)}</b>` },
+        {
+          title: 'Заполнено',
+          className: 'num',
+          render: (row) => {
+            const used = row.utilisation_pct || 0;
+            const colour = row.breached ? 'var(--down)' : used > 80 ? 'var(--warn)' : 'var(--up)';
+            return `<div class="meter">
+              <span class="meter__val">${fmt.num(used, 0)}%</span>
+              <span class="meter__bar"><span class="meter__fill" style="width:${Math.min(used, 100)}%;background:${colour}"></span></span>
+            </div>`;
+          },
+        },
+        { title: 'Запас', className: 'num', render: (row) => `<span class="${row.breached ? 'down' : 'dim'}">${fmt.num(row.headroom, 2)}</span>` },
+        { title: 'Статус', render: (row) => (row.breached ? '<span class="badge badge--down">нарушен</span>' : '<span class="badge badge--up">в норме</span>') },
+        { title: '', className: 'num', render: (row) => `<button class="btn btn--ghost" data-limit="${row.limit_id}" title="Снять лимит">✕</button>` },
+      ], data.items, { emptyMessage: 'Лимиты не заданы — нажмите «Установить лимит»' });
+
+      $$('#limits-table [data-limit]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          try {
+            await api.deleteLimit(button.dataset.limit);
+            toast('Лимит снят');
+            renderLimits();
+          } catch (error) {
+            toast(error.message, true);
+          }
+        });
+      });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  async function loadLimitKinds() {
+    if (state.limitKinds.length) return;
+    try {
+      state.limitKinds = await api.limitKinds();
+      $('#l-kind').innerHTML = state.limitKinds
+        .map((item) => `<option value="${item.kind}" title="${fmt.esc(item.hint)}">${fmt.esc(item.title)}, ${fmt.esc(item.unit)}</option>`)
+        .join('');
+    } catch (error) {
+      console.warn('Виды лимитов не загружены:', error.message);
+    }
+  }
+
+  async function submitLimit(event) {
+    event.preventDefault();
+    const message = $('#limit-msg');
+    try {
+      await api.createLimit({
+        kind: $('#l-kind').value,
+        target: $('#l-target').value.trim() || null,
+        value: parseFloat($('#l-value').value),
+        comment: $('#l-comment').value.trim() || null,
+        portfolio: state.portfolioName || 'Основной',
+      });
+      message.textContent = 'Лимит установлен';
+      message.className = 'form-msg form-msg--ok';
+      $('#l-value').value = '';
+      $('#l-target').value = '';
+      renderLimits();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  /** Проверка сделки до её совершения. */
+  async function checkDealAgainstLimits() {
+    const message = $('#deal-msg');
+    const secid = $('#d-secid').value.trim().toUpperCase();
+    const quantity = parseFloat($('#d-qty').value);
+    const price = parseFloat($('#d-price').value);
+
+    if (!secid || !quantity || !price) {
+      message.textContent = 'Заполните инструмент, количество и цену';
+      message.className = 'form-msg form-msg--err';
+      return;
+    }
+
+    try {
+      const result = await api.previewTrade({
+        secid, quantity, price, portfolio: $('#d-portfolio').value.trim() || null,
+      });
+      if (result.allowed) {
+        message.textContent =
+          `Лимиты соблюдены: сделка на ${fmt.rub(result.value_rub)} — это ${fmt.pct(result.value_share_pct, 1)} портфеля`;
+        message.className = 'form-msg form-msg--ok';
+      } else {
+        const names = result.new_breaches
+          .map((row) => `${row.kind_title} (${row.subject}): ${fmt.num(row.actual, 1)} при лимите ${fmt.num(row.limit_value, 1)}`)
+          .join('; ');
+        message.textContent = `Сделка выведет за лимиты — ${names}`;
+        message.className = 'form-msg form-msg--err';
+      }
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Список наблюдения
+  // ------------------------------------------------------------------
+  async function renderWatchlist() {
+    const container = $('#watchlist-table');
+    try {
+      const items = await api.watchlist();
+      renderTable(container, [
+        { title: 'Бумага', render: (row) => secCell(row) },
+        { title: 'Цена', className: 'num', render: (row) => fmt.price(row.last) },
+        { title: 'Изм.', className: 'num', render: (row) => changeCell(row.change_pct) },
+        { title: 'Доходность', className: 'num', render: (row) => fmt.pct(row.yield_pct) },
+        { title: 'Премия', className: 'num', render: (row) => premiumCell(row.spread_to_curve_bp) },
+        { title: 'Оборот, ₽', className: 'num', render: (row) => fmt.money(row.turnover) },
+        { title: 'Ликв.', className: 'num', render: (row) => liquidityCell(row.liquidity_score) },
+        { title: '', className: 'num', render: (row) => `<button class="btn btn--ghost" data-watch="${row.id}" title="Убрать">✕</button>` },
+      ], items, {
+        rowKey: (row) => row.secid,
+        onRowClick: openInstrument,
+        emptyMessage: 'Список пуст — добавьте бумагу по коду',
+      });
+
+      $$('#watchlist-table [data-watch]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          try {
+            await api.removeWatch(button.dataset.watch);
+            renderWatchlist();
+          } catch (error) {
+            toast(error.message, true);
+          }
+        });
+      });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  async function addToWatchlist() {
+    const input = $('#w-secid');
+    const secid = input.value.trim().toUpperCase();
+    if (!secid) return;
+    try {
+      await api.addWatch({ secid });
+      input.value = '';
+      toast(`${secid} добавлена в наблюдение`);
+      renderWatchlist();
+    } catch (error) {
+      toast(error.message, true);
     }
   }
 
@@ -865,6 +1246,8 @@
         onRowClick: openInstrument,
         emptyMessage: 'Отклонений не обнаружено',
       });
+
+      renderWatchlist();
 
       renderTable($('#calendar-table'), [
         { title: 'Дата', render: (row) => fmt.date(row.action_date) },
@@ -1002,12 +1385,15 @@
           <div class="section-title">Цена и объём торгов</div>
           <div id="drawer-chart"></div>
         </div>
+        ${info.kind === 'bond' ? '<div><div class="section-title">Премия к рынку гособлигаций</div><div id="drawer-spread"></div></div>' : ''}
         ${data.cashflows.length ? '<div><div class="section-title">График выплат (данные НРД)</div><div id="drawer-cashflows" class="table-wrap"></div></div>' : ''}`;
 
       charts.priceVolumeChart($('#drawer-chart'), data.history, {
         height: 260,
         priceFormat: (value) => fmt.price(value),
       });
+
+      if (info.kind === 'bond') renderSpreadHistory(info.secid);
 
       if (data.cashflows.length) {
         const upcoming = data.cashflows
@@ -1022,6 +1408,54 @@
       }
     } catch (error) {
       failure(body, error);
+    }
+  }
+
+  /** История премии выпуска к рынку гособлигаций. */
+  async function renderSpreadHistory(secid) {
+    const container = $('#drawer-spread');
+    if (!container) return;
+    try {
+      const data = await api.spreadHistory(secid, 365);
+      if (!data.points.length) {
+        // Причину сообщает сервер: у флоатеров доходности нет в принципе,
+        // а по остальным история может быть просто ещё не загружена
+        return charts.empty(container, data.reason || 'Данных для расчёта премии пока нет');
+      }
+
+      charts.lineChart(
+        container,
+        [{
+          name: 'Премия, бп',
+          color: themeColor('--accent', '#3f9d6d'),
+          points: data.points.map((point) => ({
+            x: new Date(point.trade_date).getTime(),
+            y: point.spread_bp,
+            label: `${fmt.date(point.trade_date)}: ${fmt.bp(point.spread_bp)}`,
+          })),
+        }],
+        {
+          height: 200,
+          yFormat: (v) => fmt.num(v, 0),
+          xFormat: (v) => fmt.dateShort(new Date(v)),
+        }
+      );
+
+      const stats = data.stats || {};
+      if (fmt.isNum(stats.deviation_bp)) {
+        const verdict = stats.deviation_bp > 0
+          ? 'бумага торгуется дешевле своей средней'
+          : 'бумага торгуется дороже своей средней';
+        container.insertAdjacentHTML(
+          'beforeend',
+          `<p class="card__note" style="border:none;padding:8px 0 0">
+            Сейчас ${fmt.bp(stats.current_bp)} против средней ${fmt.bp(stats.average_bp)} за период
+            (диапазон ${fmt.bp(stats.min_bp)}…${fmt.bp(stats.max_bp)}) — ${verdict}.
+          </p>`
+        );
+      }
+    } catch (error) {
+      failure(container, error);
     }
   }
 
@@ -1148,6 +1582,26 @@
     );
     on('#analysis-xlsx', 'click', () => downloadAnalysis('xlsx'));
     on('#analysis-csv', 'click', () => downloadAnalysis('csv'));
+    on('#a-save-screen', 'click', saveScreen);
+    on('#a-screens', 'change', (event) => {
+      if (event.target.value) applyScreen(event.target.value);
+    });
+
+    // Лимиты и проверка сделки
+    on('#limit-add', 'click', async () => {
+      await loadLimitKinds();
+      const form = $('#limit-form');
+      form.hidden = !form.hidden;
+    });
+    on('#limit-cancel', 'click', () => { $('#limit-form').hidden = true; });
+    on('#limit-form', 'submit', submitLimit);
+    on('#deal-check', 'click', checkDealAgainstLimits);
+
+    // Список наблюдения
+    on('#w-add', 'click', addToWatchlist);
+    on('#w-secid', 'keydown', (event) => {
+      if (event.key === 'Enter') addToWatchlist();
+    });
 
     // Выгрузка
     on('#e-run', 'click', runExport);

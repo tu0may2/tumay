@@ -11,6 +11,7 @@ from ..db import get_session
 from ..models import Deal, Instrument
 from ..schemas import DealCreate, DealRead
 from ..services import portfolio as portfolio_service
+from ..services import risk as risk_service
 
 router = APIRouter(prefix="/api/portfolio", tags=["Портфель"])
 
@@ -18,10 +19,11 @@ router = APIRouter(prefix="/api/portfolio", tags=["Портфель"])
 @router.get("", summary="Сводка по портфелю")
 def get_portfolio(
     name: str | None = Query(None, description="Имя портфеля; пусто — все сразу"),
+    method: str | None = Query(None, description="fifo или average"),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """Стоимость, финансовый результат, дюрация и концентрация."""
-    return portfolio_service.portfolio_summary(session, portfolio=name)
+    """Стоимость, результат с разложением, дюрация, концентрация и валюты."""
+    return portfolio_service.portfolio_summary(session, portfolio=name, method=method)
 
 
 @router.get("/names", summary="Список портфелей")
@@ -35,7 +37,7 @@ def get_sensitivity(
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     """Переоценка облигаций при параллельном сдвиге кривой."""
-    return portfolio_service.rate_sensitivity(session, portfolio=name)
+    return risk_service.rate_sensitivity(session, portfolio=name)
 
 
 @router.get("/deals", response_model=list[DealRead], summary="Журнал сделок")

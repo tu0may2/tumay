@@ -184,9 +184,16 @@ def curve_yield_at(points: Sequence[dict[str, Any]], years: float) -> float | No
 # Витрина инструментов
 # ----------------------------------------------------------------------
 def build_row(
-    instrument: Instrument, quote: Quote, curve_points: Sequence[dict] | None = None
+    instrument: Instrument,
+    quote: Quote,
+    curve_points: Sequence[dict] | None = None,
+    fx_rate: float = 1.0,
 ) -> dict[str, Any]:
-    """Развернуть пару инструмент+котировка в строку витрины с метриками."""
+    """Развернуть пару инструмент+котировка в строку витрины с метриками.
+
+    ``fx_rate`` — курс валюты номинала к рублю: нужен, чтобы у валютных
+    выпусков сумма к оплате считалась в одной валюте с НКД.
+    """
     row: dict[str, Any] = {
         "secid": instrument.secid,
         "isin": instrument.isin,
@@ -219,6 +226,8 @@ def build_row(
         "capitalization": quote.capitalization,
         "liquidity_score": liquidity_score(quote),
         "trading_status": quote.trading_status,
+        "face_unit": instrument.face_unit,
+        "fx_rate": fx_rate,
     }
 
     if instrument.kind == "bond":
@@ -231,15 +240,18 @@ def build_row(
             if quote.accrued_interest is not None
             else instrument.accrued_interest
         )
-        # Полная («грязная») цена — то, что фактически платит покупатель:
-        # котировка в % от номинала плюс накопленный купонный доход
+        # Полная («грязная») цена — то, что фактически платит покупатель.
+        # Цена задана в процентах от номинала, а номинал может быть валютным;
+        # НКД биржа отдаёт уже в валюте расчётов. Поэтому чистую часть сначала
+        # приводим к рублям по курсу и только потом складываем с НКД.
         dirty_price = None
         settlement_amount = None
         price = quote.last or quote.wa_price or quote.prev_close
         if price is not None and instrument.face_value:
-            clean_amount = price / 100 * instrument.face_value
-            settlement_amount = clean_amount + (accrued or 0)
-            dirty_price = settlement_amount / instrument.face_value * 100
+            face_rub = instrument.face_value * fx_rate
+            clean_amount_rub = price / 100 * face_rub
+            settlement_amount = clean_amount_rub + (accrued or 0)
+            dirty_price = settlement_amount / face_rub * 100 if face_rub else None
         benchmark = (
             curve_yield_at(curve_points, duration_years)
             if curve_points and duration_years is not None
@@ -299,8 +311,14 @@ def screener(
     curve = yield_curve(session)
     curve_points = curve["points"]
 
+    from .fx import FxBook, instrument_currency
+
+    fx = FxBook(session)
     rows = [
-        build_row(instrument, quote, curve_points)
+        build_row(
+            instrument, quote, curve_points,
+            fx_rate=fx.rate(instrument_currency(instrument)) or 1.0,
+        )
         for instrument, quote in latest_rows(session, kinds=kinds, boards=boards)
     ]
 

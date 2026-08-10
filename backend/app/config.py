@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # Ограничение на число инструментов в срезе (0 = без ограничения)
     max_instruments_per_board: int = 0
 
+    # Метод учёта себестоимости: fifo (нужен для налогового учёта) или average
+    cost_method: str = "fifo"
+    # Индексы-ориентиры для сравнения портфеля
+    benchmark_bond_index: str = "RGBITR"
+    benchmark_corp_index: str = "RUCBITR"
+
     @property
     def frontend_dir(self) -> Path:
         return BASE_DIR / "frontend"

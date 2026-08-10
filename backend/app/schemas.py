@@ -56,3 +56,78 @@ class HealthResponse(BaseModel):
     instruments: int
     quotes: int
     last_collection: str | None
+
+
+class LimitCreate(BaseModel):
+    """Установка лимита казначейства."""
+
+    kind: str = Field(..., description="Вид лимита из /api/limits/kinds")
+    value: float = Field(..., gt=0, description="Предельное значение")
+    target: str | None = Field(None, max_length=256, description="К чему относится")
+    portfolio: str = Field("Основной", min_length=1, max_length=64)
+    comment: str | None = None
+
+
+class LimitRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    portfolio: str
+    kind: str
+    target: str | None
+    value: float
+    comment: str | None
+    enabled: bool
+
+
+class TradePreview(BaseModel):
+    """Гипотетическая сделка для проверки лимитов."""
+
+    secid: str = Field(..., min_length=1, max_length=64)
+    quantity: float = Field(..., gt=0)
+    price: float = Field(..., gt=0)
+    portfolio: str | None = None
+
+    @field_validator("secid")
+    @classmethod
+    def _upper(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class SavedScreenCreate(BaseModel):
+    """Сохранение набора фильтров."""
+
+    view: str = Field(..., min_length=1, max_length=32)
+    name: str = Field(..., min_length=1, max_length=128)
+    params: dict = Field(default_factory=dict)
+
+
+class SavedScreenRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    view: str
+    name: str
+    params: str
+
+
+class WatchItemCreate(BaseModel):
+    """Добавление бумаги в список наблюдения."""
+
+    secid: str = Field(..., min_length=1, max_length=64)
+    watchlist: str = Field("Основной", min_length=1, max_length=64)
+    note: str | None = None
+
+    @field_validator("secid")
+    @classmethod
+    def _upper(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class WatchItemRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    secid: str
+    watchlist: str
+    note: str | None
