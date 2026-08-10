@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -71,6 +73,23 @@ app.add_middleware(
 
 app.include_router(api_router)
 
+def _asset_version(static_dir: Path) -> str:
+    """Отпечаток статики: меняется при любой правке скриптов или стилей.
+
+    Подставляется в адреса ассетов, иначе браузер после обновления версии
+    продолжает выполнять закэшированный скрипт: разметка новая, обработчики
+    старые — и кнопки «не работают».
+    """
+    digest = hashlib.sha256()
+    for path in sorted(static_dir.rglob("*")):
+        if path.is_file():
+            stat = path.stat()
+            digest.update(path.name.encode())
+            digest.update(str(stat.st_mtime_ns).encode())
+            digest.update(str(stat.st_size).encode())
+    return digest.hexdigest()[:12]
+
+
 # Веб-интерфейс отдаётся тем же приложением — отдельный сервер не нужен
 _frontend = settings.frontend_dir
 if _frontend.is_dir():
@@ -79,8 +98,18 @@ if _frontend.is_dir():
     )
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(_frontend / "index.html")
+    def index() -> HTMLResponse:
+        # Версию считаем на каждый запрос: при разработке файлы меняются,
+        # а страница открывается редко — стоимость незаметна
+        version = _asset_version(_frontend / "static")
+        html = (_frontend / "index.html").read_text(encoding="utf-8")
+        html = html.replace("__ASSET_VERSION__", version)
+        return HTMLResponse(
+            html,
+            # Саму страницу браузер обязан перепроверять, иначе он не узнает
+            # о новой версии ассетов
+            headers={"Cache-Control": "no-cache, must-revalidate"},
+        )
 
 else:  # pragma: no cover — на случай запуска без собранного фронтенда
     logger.warning("Каталог фронтенда не найден: %s", _frontend)

@@ -10,6 +10,8 @@
     exportReady: false,
     exportParamsLoaded: false,
     bondFiltersLoaded: false,
+    bondMode: 'screen',
+    analysisLoaded: false,
   };
 
   const THEME_KEY = 'treasury-theme';
@@ -41,6 +43,23 @@
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+
+  /**
+   * Безопасная привязка обработчика.
+   * Все кнопки и фильтры связываются в одной функции инициализации: если хоть
+   * один элемент отсутствует, обычный addEventListener бросает исключение и
+   * обрывает её — тогда перестают работать сразу все элементы, включая тему.
+   * Здесь отсутствие элемента только пишется в консоль.
+   */
+  function on(selector, event, handler) {
+    const node = typeof selector === 'string' ? $(selector) : selector;
+    if (!node) {
+      console.warn('Элемент не найден, обработчик не привязан:', selector);
+      return false;
+    }
+    node.addEventListener(event, handler);
+    return true;
+  }
 
   // ------------------------------------------------------------------
   // Вспомогательные элементы
@@ -406,51 +425,6 @@
   }
 
   // ------------------------------------------------------------------
-  // Облигации
-  // ------------------------------------------------------------------
-  async function renderBonds() {
-    const container = $('#bonds-table');
-    loading(container);
-
-    const params = {
-      kind: ['bond'],
-      search: $('#b-search').value.trim(),
-      min_yield: parseFloat($('#b-minyield').value) || null,
-      max_yield: parseFloat($('#b-maxyield').value) || null,
-      max_duration_years: parseFloat($('#b-maxdur').value) || null,
-      min_turnover: (parseFloat($('#b-turnover').value) || 0) * 1e6,
-      sort_by: $('#b-sort').value,
-      limit: 200,
-    };
-
-    try {
-      const data = await api.instruments(params);
-      $('#bonds-count').textContent =
-        `${fmt.int(data.total)} ${fmt.plural(data.total, 'выпуск', 'выпуска', 'выпусков')}` +
-        (data.curve_date ? ` · КБД на ${fmt.date(data.curve_date)}` : '');
-
-      renderTable(container, [
-        { title: 'Выпуск', render: (row) => secCell(row) },
-        { title: 'Погашение', render: (row) => `<span class="dim">${fmt.date(row.maturity_date)}</span>` },
-        { title: 'Цена, %', className: 'num', render: (row) => fmt.price(row.last) },
-        { title: 'Доходность', className: 'num', render: (row) => `<b>${fmt.pct(row.yield_pct)}</b>` },
-        { title: 'КБД', className: 'num', render: (row) => fmt.pct(row.curve_yield_pct) },
-        { title: 'Премия', className: 'num', render: (row) => premiumCell(row.spread_to_curve_bp) },
-        { title: 'Дюрация', className: 'num', render: (row) => (fmt.isNum(row.duration_years) ? fmt.num(row.duration_years, 2) + ' л' : '—') },
-        { title: 'Купон', className: 'num', render: (row) => fmt.pct(row.coupon_percent) },
-        { title: 'Оборот, ₽', className: 'num', render: (row) => fmt.money(row.turnover) },
-        { title: 'Ур.', className: 'num', render: (row) => `<span class="badge">${row.list_level || '—'}</span>` },
-      ], data.items, {
-        rowKey: (row) => row.secid,
-        onRowClick: openInstrument,
-        emptyMessage: 'Нет выпусков под заданные условия',
-      });
-    } catch (error) {
-      failure(container, error);
-    }
-  }
-
-  // ------------------------------------------------------------------
   // Анализ облигаций
   // ------------------------------------------------------------------
   /** Собрать параметры запроса из панели фильтров. */
@@ -514,6 +488,7 @@
       }
 
       const data = await api.bondAnalysis(analysisParams());
+      state.analysisLoaded = true;
       $('#analysis-count').textContent =
         `${fmt.int(data.total)} ${fmt.plural(data.total, 'выпуск', 'выпуска', 'выпусков')}` +
         (data.curve_date ? ` · КБД на ${fmt.date(data.curve_date)}` : '');
@@ -1057,12 +1032,32 @@
   // ------------------------------------------------------------------
   // Навигация и события
   // ------------------------------------------------------------------
+  /** Вкладка облигаций: анализ рынка и выгрузка по списку в одном месте. */
+  async function renderBondsTab() {
+    // Список параметров нужен и для режима выгрузки — грузим сразу
+    renderExportParams();
+    await renderAnalysis();
+  }
+
+  function switchBondMode(mode) {
+    state.bondMode = mode;
+    $$('#bond-mode button').forEach((button) =>
+      button.classList.toggle('is-active', button.dataset.bmode === mode)
+    );
+    $('#pane-screen').hidden = mode !== 'screen';
+    $('#pane-list').hidden = mode !== 'list';
+    $('#bond-mode-hint').textContent =
+      mode === 'screen'
+        ? 'Отбор по всем торгуемым выпускам на текущий срез'
+        : 'Свои бумаги за период: вставьте список из Excel';
+
+    if (mode === 'screen' && !state.analysisLoaded) renderAnalysis();
+  }
+
   const RENDERERS = {
     overview: renderOverview,
     instruments: renderInstruments,
-    bonds: renderBonds,
-    analysis: renderAnalysis,
-    export: renderExportParams,
+    bonds: renderBondsTab,
     portfolio: renderPortfolio,
     signals: renderSignals,
     sources: renderSources,
@@ -1125,40 +1120,40 @@
     const today = new Date();
     const isoToday = today.toISOString().slice(0, 10);
     const monthAgo = new Date(today.getTime() - 30 * 86400000).toISOString().slice(0, 10);
-    $('#d-date').value = isoToday;
-    $('#e-from').value = monthAgo;
-    $('#e-to').value = isoToday;
+    [['#d-date', isoToday], ['#e-from', monthAgo], ['#e-to', isoToday]].forEach(
+      ([selector, value]) => { const node = $(selector); if (node) node.value = value; }
+    );
 
     $$('.tab').forEach((tab) => {
       tab.addEventListener('click', () => switchView(tab.dataset.view));
     });
 
-    $('#btn-theme').addEventListener('click', () => {
+    on('#btn-theme', 'click', () => {
       const current = document.documentElement.getAttribute('data-theme');
       applyTheme(current === 'light' ? 'dark' : 'light');
     });
 
-    $('#btn-refresh').addEventListener('click', refresh);
-    $('#btn-collect').addEventListener('click', collect);
-    $('#deal-form').addEventListener('submit', submitDeal);
+    on('#btn-refresh', 'click', refresh);
+    on('#btn-collect', 'click', collect);
+    on('#deal-form', 'submit', submitDeal);
 
     // Анализ облигаций
     const onAnalysisFilter = debounce(renderAnalysis);
     ['#a-search', '#a-minyield', '#a-maxyield', '#a-mindur', '#a-maxdur',
      '#a-matfrom', '#a-matto', '#a-turnover', '#a-risk'].forEach((selector) =>
-      $(selector).addEventListener('input', onAnalysisFilter)
+      on(selector, 'input', onAnalysisFilter)
     );
     ['#a-coupon', '#a-level', '#a-currency', '#a-offer', '#a-amort', '#a-sort'].forEach(
-      (selector) => $(selector).addEventListener('change', renderAnalysis)
+      (selector) => on(selector, 'change', renderAnalysis)
     );
-    $('#analysis-xlsx').addEventListener('click', () => downloadAnalysis('xlsx'));
-    $('#analysis-csv').addEventListener('click', () => downloadAnalysis('csv'));
+    on('#analysis-xlsx', 'click', () => downloadAnalysis('xlsx'));
+    on('#analysis-csv', 'click', () => downloadAnalysis('csv'));
 
     // Выгрузка
-    $('#e-run').addEventListener('click', runExport);
-    $('#e-xlsx').addEventListener('click', () => downloadExport('xlsx'));
-    $('#e-csv').addEventListener('click', () => downloadExport('csv'));
-    $('#e-all').addEventListener('click', () => {
+    on('#e-run', 'click', runExport);
+    on('#e-xlsx', 'click', () => downloadExport('xlsx'));
+    on('#e-csv', 'click', () => downloadExport('csv'));
+    on('#e-all', 'click', () => {
       const boxes = $$('#e-params input[type="checkbox"]');
       const allChecked = boxes.every((box) => box.checked);
       boxes.forEach((box) => { box.checked = !allChecked; });
@@ -1177,17 +1172,15 @@
 
     const onInstrumentFilter = debounce(renderInstruments);
     ['#f-search', '#f-turnover', '#f-liquidity'].forEach((selector) =>
-      $(selector).addEventListener('input', onInstrumentFilter)
+      on(selector, 'input', onInstrumentFilter)
     );
     ['#f-kind', '#f-sort'].forEach((selector) =>
-      $(selector).addEventListener('change', renderInstruments)
+      on(selector, 'change', renderInstruments)
     );
 
-    const onBondFilter = debounce(renderBonds);
-    ['#b-search', '#b-minyield', '#b-maxyield', '#b-maxdur', '#b-turnover'].forEach((selector) =>
-      $(selector).addEventListener('input', onBondFilter)
-    );
-    $('#b-sort').addEventListener('change', renderBonds);
+    $$('#bond-mode button').forEach((button) => {
+      button.addEventListener('click', () => switchBondMode(button.dataset.bmode));
+    });
 
     $$('[data-close]').forEach((node) => node.addEventListener('click', closeDrawer));
     document.addEventListener('keydown', (event) => {
@@ -1197,5 +1190,13 @@
     switchView('overview');
   }
 
-  document.addEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', () => {
+    try {
+      init();
+    } catch (error) {
+      // Тема применяется первой, чтобы интерфейс не остался нечитаемым
+      console.error('Ошибка инициализации интерфейса:', error);
+      applyTheme(initialTheme());
+    }
+  });
 })();

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Казначейский терминал</title>
-  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/app.css?v=__ASSET_VERSION__">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📊</text></svg>">
 </head>
 <body>
@@ -31,8 +31,6 @@
     <button class="tab tab--active" data-view="overview" type="button">Обзор рынка</button>
     <button class="tab" data-view="instruments" type="button">Инструменты</button>
     <button class="tab" data-view="bonds" type="button">Облигации</button>
-    <button class="tab" data-view="analysis" type="button">Анализ облигаций</button>
-    <button class="tab" data-view="export" type="button">Выгрузка</button>
     <button class="tab" data-view="portfolio" type="button">Портфель</button>
     <button class="tab" data-view="signals" type="button">Сигналы</button>
     <button class="tab" data-view="sources" type="button">Источники</button>
@@ -128,52 +126,17 @@
       </article>
     </section>
 
-    <!-- Облигации -->
+    <!-- Облигации: анализ рынка и выгрузка по списку в одной вкладке -->
     <section class="view" id="view-bonds">
-      <article class="card">
-        <header class="card__head">
-          <h2>Подбор облигаций</h2>
-          <span class="card__hint" id="bonds-count"></span>
-        </header>
-        <div class="filters">
-          <label class="field">
-            <span>Поиск</span>
-            <input type="search" id="b-search" placeholder="Код, эмитент или ISIN">
-          </label>
-          <label class="field">
-            <span>Доходность от, %</span>
-            <input type="number" id="b-minyield" step="0.5" value="0">
-          </label>
-          <label class="field">
-            <span>Доходность до, %</span>
-            <input type="number" id="b-maxyield" step="0.5" placeholder="без ограничения">
-          </label>
-          <label class="field">
-            <span>Дюрация до, лет</span>
-            <input type="number" id="b-maxdur" step="0.5" placeholder="без ограничения">
-          </label>
-          <label class="field">
-            <span>Оборот от, млн ₽</span>
-            <input type="number" id="b-turnover" min="0" step="1" value="1">
-          </label>
-          <label class="field">
-            <span>Сортировка</span>
-            <select id="b-sort">
-              <option value="turnover">Оборот</option>
-              <option value="spread_to_curve_bp">Премия к КБД</option>
-              <option value="yield_pct">Доходность</option>
-              <option value="duration_years">Дюрация</option>
-            </select>
-          </label>
+      <div class="toolbar toolbar--modes">
+        <div class="segmented" id="bond-mode">
+          <button data-bmode="screen" class="is-active" type="button">Анализ рынка</button>
+          <button data-bmode="list" type="button">По списку бумаг</button>
         </div>
-        <div class="card__body table-wrap" id="bonds-table"></div>
-        <p class="card__note">Премия к КБД показывает, сколько базисных пунктов бумага платит сверх безрисковой кривой на своей дюрации. Умеренная премия — плата за кредитный риск, премия свыше 1000 бп (помечена ⚠) почти всегда сигнализирует о проблемах эмитента, а не о выгодной покупке. Сверяйте с уровнем листинга и оборотом.</p>
-      </article>
-    </section>
+        <span class="card__hint" id="bond-mode-hint">Отбор по всем торгуемым выпускам на текущий срез</span>
+      </div>
 
-    <!-- Анализ облигаций -->
-    <section class="view" id="view-analysis">
-      <article class="card">
+      <article class="card bond-pane" id="pane-screen">
         <header class="card__head">
           <h2>Анализ облигаций</h2>
           <div class="card__tools">
@@ -279,11 +242,9 @@
           рейтинг агентства: рейтинги АКРА и Эксперт РА в открытом машиночитаемом виде не публикуются.
         </p>
       </article>
-    </section>
 
-    <!-- Выгрузка -->
-    <section class="view" id="view-export">
-      <div class="grid grid--2">
+      <div class="bond-pane" id="pane-list" hidden>
+        <div class="grid grid--2">
         <article class="card">
           <header class="card__head"><h2>Список бумаг</h2></header>
           <div class="card__body">
@@ -340,6 +301,7 @@ SU26238RMFS4
           В выгрузку уходит ровно то, что показано на экране.
         </p>
       </article>
+      </div>
     </section>
 
     <!-- Портфель -->
@@ -478,9 +440,9 @@ SU26238RMFS4
 
   <div class="toast" id="toast" hidden></div>
 
-  <script src="/static/js/format.js"></script>
-  <script src="/static/js/api.js"></script>
-  <script src="/static/js/charts.js"></script>
-  <script src="/static/js/app.js"></script>
+  <script src="/static/js/format.js?v=__ASSET_VERSION__"></script>
+  <script src="/static/js/api.js?v=__ASSET_VERSION__"></script>
+  <script src="/static/js/charts.js?v=__ASSET_VERSION__"></script>
+  <script src="/static/js/app.js?v=__ASSET_VERSION__"></script>
 </body>
 </html>
