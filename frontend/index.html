@@ -86,7 +86,10 @@
       <article class="card">
         <header class="card__head">
           <h2>Отбор инструментов</h2>
-          <span class="card__hint" id="instruments-count"></span>
+          <div class="card__tools">
+            <span class="card__hint" id="instruments-count"></span>
+            <button class="btn btn--sm" id="instruments-buy" type="button" disabled>В портфель</button>
+          </div>
         </header>
         <div class="filters">
           <label class="field">
@@ -141,6 +144,7 @@
           <h2>Анализ облигаций</h2>
           <div class="card__tools">
             <span class="card__hint" id="analysis-count"></span>
+            <button class="btn btn--sm" id="analysis-buy" type="button" disabled>В портфель</button>
             <select id="a-screens" class="btn btn--sm" title="Сохранённые отборы">
               <option value="">Сохранённые отборы…</option>
             </select>
@@ -522,6 +526,56 @@ SU26238RMFS4
       </header>
       <div class="drawer__body" id="drawer-body"></div>
     </aside>
+  </div>
+
+  <!-- Добавление бумаг в портфель -->
+  <div class="modal" id="buy-modal" hidden>
+    <div class="modal__backdrop" data-buy-close></div>
+    <div class="modal__box" role="dialog" aria-modal="true" aria-labelledby="buy-title">
+      <header class="modal__head">
+        <div>
+          <h2 id="buy-title">Добавить в портфель</h2>
+          <p class="drawer__sub" id="buy-sub"></p>
+        </div>
+        <button class="btn btn--ghost" type="button" data-buy-close aria-label="Закрыть">✕</button>
+      </header>
+
+      <div class="modal__body">
+        <div class="table-wrap" id="buy-rows" style="max-height:340px"></div>
+
+        <div class="filters" style="background:none;border:none;padding:14px 0 0">
+          <label class="field">
+            <span>Направление</span>
+            <select id="buy-side">
+              <option value="buy">Покупка</option>
+              <option value="sell">Продажа</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Дата сделки</span>
+            <input type="date" id="buy-date">
+          </label>
+          <label class="field">
+            <span>Портфель</span>
+            <input id="buy-portfolio" value="Основной">
+          </label>
+          <label class="field">
+            <span>Комиссия на сделку</span>
+            <input type="number" id="buy-fee" step="any" min="0" value="0">
+          </label>
+        </div>
+
+        <div id="buy-check"></div>
+      </div>
+
+      <footer class="modal__foot">
+        <span class="card__hint" id="buy-total"></span>
+        <div class="card__tools">
+          <button class="btn" type="button" id="buy-verify">Проверить лимиты</button>
+          <button class="btn btn--primary" type="button" id="buy-submit">Добавить сделки</button>
+        </div>
+      </footer>
+    </div>
   </div>
 
   <div class="toast" id="toast" hidden></div>

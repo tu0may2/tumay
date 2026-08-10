@@ -200,3 +200,54 @@ class TestFrontend:
     def test_static_assets(self, client):
         for path in ("/static/css/app.css", "/static/js/app.js", "/static/js/charts.js"):
             assert client.get(path).status_code == 200
+
+
+class TestBulkDeals:
+    """Пакетное добавление сделок из витрины бумаг."""
+
+    def test_adds_several_at_once(self, client):
+        response = client.post("/api/portfolio/deals/bulk", json={
+            "deals": [
+                {"secid": "SBER", "side": "buy", "quantity": 100, "price": 274.0,
+                 "trade_date": "2026-08-10"},
+                {"secid": "OFZ26238", "side": "buy", "quantity": 50, "price": 54.0,
+                 "accrued_interest": 13.4, "trade_date": "2026-08-10"},
+            ]
+        })
+        assert response.status_code == 201
+        payload = response.json()
+        assert payload["created_count"] == 2
+        assert payload["error_count"] == 0
+        assert client.get("/api/portfolio").json()["positions_open"] == 2
+
+    def test_unknown_instrument_does_not_block_others(self, client):
+        response = client.post("/api/portfolio/deals/bulk", json={
+            "deals": [
+                {"secid": "SBER", "side": "buy", "quantity": 10, "price": 274.0,
+                 "trade_date": "2026-08-10"},
+                {"secid": "НЕТТАКОЙ", "side": "buy", "quantity": 10, "price": 100.0,
+                 "trade_date": "2026-08-10"},
+            ]
+        })
+        payload = response.json()
+        # Хорошая строка сохраняется, по плохой возвращается причина
+        assert payload["created_count"] == 1
+        assert payload["error_count"] == 1
+        assert payload["errors"][0]["secid"] == "НЕТТАКОЙ"
+
+    def test_secid_normalised(self, client):
+        response = client.post("/api/portfolio/deals/bulk", json={
+            "deals": [{"secid": "sber", "side": "buy", "quantity": 10,
+                       "price": 274.0, "trade_date": "2026-08-10"}]
+        })
+        assert response.json()["created"][0]["secid"] == "SBER"
+
+    def test_rejects_empty_list(self, client):
+        assert client.post("/api/portfolio/deals/bulk", json={"deals": []}).status_code == 422
+
+    def test_rejects_bad_quantity(self, client):
+        response = client.post("/api/portfolio/deals/bulk", json={
+            "deals": [{"secid": "SBER", "side": "buy", "quantity": -5,
+                       "price": 274.0, "trade_date": "2026-08-10"}]
+        })
+        assert response.status_code == 422

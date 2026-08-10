@@ -131,3 +131,18 @@ class WatchItemRead(BaseModel):
     secid: str
     watchlist: str
     note: str | None
+
+
+class DealBulkCreate(BaseModel):
+    """Пакетное добавление сделок из витрины бумаг."""
+
+    deals: list[DealCreate] = Field(..., min_length=1, max_length=200)
+
+
+class DealBulkResult(BaseModel):
+    """Итог пакетного добавления: что прошло, что нет."""
+
+    created: list[DealRead]
+    errors: list[dict]
+    created_count: int
+    error_count: int

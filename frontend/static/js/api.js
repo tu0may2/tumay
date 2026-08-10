@@ -131,6 +131,7 @@
     sensitivity: (name) => request('/api/portfolio/sensitivity', { params: { name } }),
     deals: (params) => request('/api/portfolio/deals', { params }),
     createDeal: (deal) => request('/api/portfolio/deals', { method: 'POST', body: deal }),
+    createDealsBulk: (body) => request('/api/portfolio/deals/bulk', { method: 'POST', body }),
     deleteDeal: (id) => request(`/api/portfolio/deals/${id}`, { method: 'DELETE' }),
   };
 })(window);

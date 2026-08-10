@@ -15,6 +15,9 @@
     analysisLoaded: false,
     screens: [],
     limitKinds: [],
+    picked: { instruments: {}, analysis: {} },
+    rows: { instruments: {}, analysis: {} },
+    buyRows: [],
   };
 
   const THEME_KEY = 'treasury-theme';
@@ -130,6 +133,84 @@
       .getPropertyValue(name)
       .trim();
     return value || fallback;
+  }
+
+  // ------------------------------------------------------------------
+  // Отметка бумаг для добавления в портфель
+  // ------------------------------------------------------------------
+  /** Колонка с флажком и кнопкой быстрого добавления одной бумаги. */
+  function pickColumn(scope) {
+    return {
+      title: `<input type="checkbox" data-pick-all="${scope}" title="Отметить все">`,
+      className: 'pick',
+      render: (row) => {
+        const picked = state.picked[scope] && state.picked[scope][row.secid];
+        return `<input type="checkbox" data-pick="${scope}" value="${fmt.esc(row.secid)}"${picked ? ' checked' : ''}>`;
+      },
+    };
+  }
+
+  function buyColumn(scope) {
+    return {
+      title: '',
+      className: 'num',
+      render: (row) =>
+        `<button class="btn btn--ghost" data-buy-one="${fmt.esc(row.secid)}" title="Добавить в портфель">+</button>`,
+    };
+  }
+
+  /** Запомнить строки витрины, чтобы окно знало цену и НКД по коду. */
+  function rememberRows(scope, rows) {
+    state.rows[scope] = {};
+    (rows || []).forEach((row) => { state.rows[scope][row.secid] = row; });
+  }
+
+  function pickedList(scope) {
+    return Object.keys(state.picked[scope] || {}).filter(
+      (secid) => state.picked[scope][secid]
+    );
+  }
+
+  function refreshPickState(scope) {
+    const count = pickedList(scope).length;
+    const button = $(scope === 'instruments' ? '#instruments-buy' : '#analysis-buy');
+    if (button) {
+      button.disabled = count === 0;
+      button.textContent = count ? `В портфель (${count})` : 'В портфель';
+    }
+  }
+
+  /** Навесить обработчики флажков и кнопок «+» после отрисовки таблицы. */
+  function wirePicking(container, scope) {
+    container.querySelectorAll(`[data-pick="${scope}"]`).forEach((box) => {
+      box.addEventListener('click', (event) => event.stopPropagation());
+      box.addEventListener('change', () => {
+        state.picked[scope] = state.picked[scope] || {};
+        state.picked[scope][box.value] = box.checked;
+        refreshPickState(scope);
+      });
+    });
+
+    const all = container.querySelector(`[data-pick-all="${scope}"]`);
+    if (all) {
+      all.addEventListener('click', (event) => event.stopPropagation());
+      all.addEventListener('change', () => {
+        state.picked[scope] = state.picked[scope] || {};
+        container.querySelectorAll(`[data-pick="${scope}"]`).forEach((box) => {
+          box.checked = all.checked;
+          state.picked[scope][box.value] = all.checked;
+        });
+        refreshPickState(scope);
+      });
+    }
+
+    container.querySelectorAll('[data-buy-one]').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openBuyModal(scope, [button.dataset.buyOne]);
+      });
+    });
+    refreshPickState(scope);
   }
 
   /**
@@ -407,7 +488,9 @@
       $('#instruments-count').textContent =
         `${fmt.int(data.total)} ${fmt.plural(data.total, 'бумага', 'бумаги', 'бумаг')}`;
 
+      rememberRows('instruments', data.items);
       renderTable(container, [
+        pickColumn('instruments'),
         { title: 'Бумага', render: (row) => secCell(row) },
         { title: 'ISIN', render: (row) => `<span class="dim" style="font-family:var(--mono);font-size:11px">${fmt.esc(row.isin || '—')}</span>` },
         { title: 'Цена', className: 'num', render: (row) => fmt.price(row.last) },
@@ -417,11 +500,13 @@
         { title: 'Сделок', className: 'num', render: (row) => fmt.int(row.num_trades) },
         { title: 'Спред', className: 'num', render: (row) => fmt.pct(row.spread_pct, 3) },
         { title: 'Ликвидность', className: 'num', render: (row) => liquidityCell(row.liquidity_score) },
+        buyColumn('instruments'),
       ], data.items, {
         rowKey: (row) => row.secid,
         onRowClick: openInstrument,
         emptyMessage: 'Ничего не найдено — ослабьте фильтры',
       });
+      wirePicking(container, 'instruments');
     } catch (error) {
       failure(container, error);
     }
@@ -496,7 +581,9 @@
         `${fmt.int(data.total)} ${fmt.plural(data.total, 'выпуск', 'выпуска', 'выпусков')}` +
         (data.curve_date ? ` · КБД на ${fmt.date(data.curve_date)}` : '');
 
+      rememberRows('analysis', data.items);
       renderTable(container, [
+        pickColumn('analysis'),
         { title: 'Выпуск', render: (row) => secCell(row) },
         { title: 'ISIN', render: (row) => `<span class="dim" style="font-family:var(--mono);font-size:11px">${fmt.esc(row.isin || '—')}</span>` },
         { title: 'Погашение', render: (row) => `<span class="dim">${fmt.date(row.maturity_date)}</span>` },
@@ -525,11 +612,13 @@
             return `<span class="badge ${cls}" title="${fmt.esc(hint)}">${fmt.num(row.risk_score, 0)} · ${fmt.esc(row.risk_band || '')}</span>`;
           },
         },
+        buyColumn('analysis'),
       ], data.items, {
         rowKey: (row) => row.secid,
         onRowClick: openInstrument,
         emptyMessage: 'Нет выпусков под заданные условия — ослабьте фильтры',
       });
+      wirePicking(container, 'analysis');
 
       renderMarketMap(data.items);
     } catch (error) {
@@ -587,6 +676,189 @@
       onPick: openInstrument,
       emptyMessage: 'Недостаточно данных для карты',
     });
+  }
+
+  // ------------------------------------------------------------------
+  // Добавление бумаг в портфель прямо из витрины
+  // ------------------------------------------------------------------
+  /**
+   * Открыть окно ввода количества.
+   * Цена и НКД подставляются из текущего среза, чтобы не искать их вручную.
+   */
+  function openBuyModal(scope, secids) {
+    const rows = (secids || [])
+      .map((secid) => (state.rows[scope] || {})[secid])
+      .filter(Boolean);
+    if (!rows.length) return toast('Не удалось определить бумаги', true);
+
+    state.buyRows = rows;
+    $('#buy-sub').textContent =
+      rows.length === 1
+        ? `${rows[0].secid} · ${rows[0].name || ''}`
+        : `Выбрано ${rows.length} ${fmt.plural(rows.length, 'бумага', 'бумаги', 'бумаг')}`;
+    $('#buy-check').innerHTML = '';
+    $('#buy-date').value = new Date().toISOString().slice(0, 10);
+
+    renderTable($('#buy-rows'), [
+      { title: 'Бумага', render: (row) => secCell(row) },
+      {
+        title: 'Цена',
+        className: 'num',
+        render: (row) =>
+          `<input class="qty-input" data-price="${fmt.esc(row.secid)}" type="number" step="any" min="0" value="${row.last ?? row.wa_price ?? ''}">`,
+      },
+      {
+        title: 'НКД',
+        className: 'num',
+        render: (row) =>
+          row.kind === 'bond'
+            ? `<input class="qty-input" data-nkd="${fmt.esc(row.secid)}" type="number" step="any" min="0" value="${row.accrued_interest ?? 0}">`
+            : '<span class="dim">—</span>',
+      },
+      {
+        title: 'Количество',
+        className: 'num',
+        render: (row) =>
+          `<input class="qty-input" data-qty="${fmt.esc(row.secid)}" type="number" step="any" min="0" placeholder="0">`,
+      },
+      { title: 'Лот', className: 'num', render: (row) => fmt.int(row.lot_size) },
+      { title: 'Сумма, ₽', className: 'num', render: (row) => `<span data-sum="${fmt.esc(row.secid)}" class="dim">—</span>` },
+    ], rows, { emptyMessage: 'Нечего добавлять' });
+
+    // Пересчёт суммы при вводе: у облигаций цена в процентах от номинала
+    const recalc = () => {
+      let total = 0;
+      state.buyRows.forEach((row) => {
+        const price = parseFloat(($(`[data-price="${row.secid}"]`) || {}).value) || 0;
+        const nkd = parseFloat(($(`[data-nkd="${row.secid}"]`) || {}).value) || 0;
+        const qty = parseFloat(($(`[data-qty="${row.secid}"]`) || {}).value) || 0;
+        const multiplier =
+          row.kind === 'bond' && row.face_value ? row.face_value / 100 : 1;
+        const fx = row.fx_rate || 1;
+        const sum = qty * price * multiplier * fx + qty * nkd;
+        const cell = $(`[data-sum="${row.secid}"]`);
+        if (cell) {
+          cell.textContent = qty ? fmt.money(sum) : '—';
+          cell.className = qty ? '' : 'dim';
+        }
+        total += sum;
+      });
+      $('#buy-total').textContent = total ? `Итого ${fmt.rub(total)}` : '';
+      state.buyTotal = total;
+    };
+
+    $$('#buy-rows input').forEach((input) => input.addEventListener('input', recalc));
+    recalc();
+
+    $('#buy-modal').hidden = false;
+    const firstQty = $('#buy-rows [data-qty]');
+    if (firstQty) firstQty.focus();
+  }
+
+  function closeBuyModal() {
+    $('#buy-modal').hidden = true;
+    state.buyRows = [];
+  }
+
+  /** Собрать сделки из окна. Бумаги с нулевым количеством пропускаем. */
+  function collectBuyDeals() {
+    const side = $('#buy-side').value;
+    const tradeDate = $('#buy-date').value;
+    const portfolio = $('#buy-portfolio').value.trim() || 'Основной';
+    const fee = parseFloat($('#buy-fee').value) || 0;
+
+    return state.buyRows
+      .map((row) => {
+        const quantity = parseFloat(($(`[data-qty="${row.secid}"]`) || {}).value) || 0;
+        const price = parseFloat(($(`[data-price="${row.secid}"]`) || {}).value) || 0;
+        const nkd = parseFloat(($(`[data-nkd="${row.secid}"]`) || {}).value) || 0;
+        if (quantity <= 0 || price <= 0) return null;
+        return {
+          secid: row.secid,
+          side,
+          quantity,
+          price,
+          accrued_interest: nkd,
+          fee,
+          trade_date: tradeDate,
+          portfolio,
+        };
+      })
+      .filter(Boolean);
+  }
+
+  async function verifyBuyAgainstLimits() {
+    const deals = collectBuyDeals();
+    const box = $('#buy-check');
+    if (!deals.length) {
+      box.innerHTML = '<div class="warnings"><div class="warnings__item">Укажите количество хотя бы по одной бумаге</div></div>';
+      return;
+    }
+
+    box.innerHTML = '<div class="empty">Проверяю лимиты…</div>';
+    try {
+      // Лимиты проверяются по каждой бумаге отдельно: сервер считает
+      // гипотетическую позицию поверх текущего портфеля
+      const results = await Promise.all(
+        deals.map((deal) =>
+          api.previewTrade({
+            secid: deal.secid,
+            quantity: deal.quantity,
+            price: deal.price,
+            portfolio: deal.portfolio,
+          })
+        )
+      );
+
+      const problems = results.flatMap((result, index) =>
+        result.new_breaches.map((row) => ({ secid: deals[index].secid, ...row }))
+      );
+
+      box.innerHTML = problems.length
+        ? `<div class="warnings">${problems
+            .map((row) => `<div class="warnings__item">${fmt.esc(row.secid)} — ${fmt.esc(row.kind_title)} (${fmt.esc(row.subject)}): ${fmt.num(row.actual, 1)} при лимите ${fmt.num(row.limit_value, 1)}</div>`)
+            .join('')}</div>`
+        : '<div class="warnings" style="background:var(--accent-soft)"><div class="warnings__item" style="color:var(--accent-strong)">Лимиты соблюдены</div></div>';
+    } catch (error) {
+      box.innerHTML = `<div class="warnings"><div class="warnings__item">${fmt.esc(error.message)}</div></div>`;
+    }
+  }
+
+  async function submitBuy() {
+    const deals = collectBuyDeals();
+    if (!deals.length) {
+      return toast('Укажите количество хотя бы по одной бумаге', true);
+    }
+
+    const button = $('#buy-submit');
+    button.disabled = true;
+    button.textContent = 'Добавляю…';
+    try {
+      const result = await api.createDealsBulk({ deals });
+      if (result.error_count) {
+        const details = result.errors
+          .map((row) => `${row.secid}: ${row.detail}`)
+          .join('; ');
+        toast(`Добавлено ${result.created_count}, не удалось ${result.error_count} — ${details}`, true);
+      } else {
+        toast(`Добавлено ${result.created_count} ${fmt.plural(result.created_count, 'сделка', 'сделки', 'сделок')}`);
+      }
+
+      // Отметки сбрасываем: бумаги уже в портфеле
+      state.picked = { instruments: {}, analysis: {} };
+      refreshPickState('instruments');
+      refreshPickState('analysis');
+      closeBuyModal();
+
+      // Портфель пересчитается при следующем открытии вкладки
+      state.loaded.portfolio = false;
+      if (state.view === 'portfolio') renderPortfolio();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Добавить сделки';
+    }
   }
 
   // ------------------------------------------------------------------
@@ -1609,6 +1881,13 @@
       });
     });
 
+    // Добавление в портфель из витрин
+    on('#instruments-buy', 'click', () => openBuyModal('instruments', pickedList('instruments')));
+    on('#analysis-buy', 'click', () => openBuyModal('analysis', pickedList('analysis')));
+    on('#buy-submit', 'click', submitBuy);
+    on('#buy-verify', 'click', verifyBuyAgainstLimits);
+    $$('[data-buy-close]').forEach((node) => node.addEventListener('click', closeBuyModal));
+
     // Список наблюдения
     on('#w-add', 'click', addToWatchlist);
     on('#w-secid', 'keydown', (event) => {
@@ -1650,7 +1929,10 @@
 
     $$('[data-close]').forEach((node) => node.addEventListener('click', closeDrawer));
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') closeDrawer();
+      if (event.key !== 'Escape') return;
+      // Окно добавления перекрывает карточку, поэтому закрываем его первым
+      if (!$('#buy-modal').hidden) closeBuyModal();
+      else closeDrawer();
     });
 
     switchView('overview');

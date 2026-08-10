@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..models import Deal, Instrument
-from ..schemas import DealCreate, DealRead
+from ..schemas import DealBulkCreate, DealBulkResult, DealCreate, DealRead
 from ..services import portfolio as portfolio_service
 from ..services import risk as risk_service
 
@@ -80,6 +80,54 @@ def create_deal(payload: DealCreate, session: Session = Depends(get_session)) ->
     session.commit()
     session.refresh(deal)
     return deal
+
+
+@router.post(
+    "/deals/bulk",
+    response_model=DealBulkResult,
+    status_code=status.HTTP_201_CREATED,
+    summary="Добавить несколько сделок сразу",
+)
+def create_deals_bulk(
+    payload: DealBulkCreate, session: Session = Depends(get_session)
+) -> dict[str, Any]:
+    """Завести пачку сделок из витрины бумаг.
+
+    Одна плохая строка не отменяет остальные: что удалось — сохраняется,
+    по остальным возвращается причина отказа.
+    """
+    known = {
+        row[0]
+        for row in session.execute(
+            select(Instrument.secid).where(
+                Instrument.secid.in_([deal.secid for deal in payload.deals])
+            )
+        ).all()
+    }
+
+    created: list[Deal] = []
+    errors: list[dict[str, Any]] = []
+    for item in payload.deals:
+        if item.secid not in known:
+            errors.append({
+                "secid": item.secid,
+                "detail": "Инструмент не найден в справочнике",
+            })
+            continue
+        deal = Deal(**item.model_dump())
+        session.add(deal)
+        created.append(deal)
+
+    session.commit()
+    for deal in created:
+        session.refresh(deal)
+
+    return {
+        "created": created,
+        "errors": errors,
+        "created_count": len(created),
+        "error_count": len(errors),
+    }
 
 
 @router.delete(

@@ -486,3 +486,48 @@ div.bond-pane[hidden] { display: none; }
   main { padding: 14px; }
   .grid--2 { grid-template-columns: 1fr; }
 }
+
+/* ------------------------------------------------------------------ */
+/* Окно добавления в портфель                                          */
+/* ------------------------------------------------------------------ */
+.modal { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; }
+/* Собственный display перебивает браузерное правило для [hidden], и скрытое
+   окно продолжало перехватывать клики по всей странице — задаём явно. */
+.modal[hidden] { display: none; }
+.modal__backdrop { position: absolute; inset: 0; background: rgba(4, 12, 8, 0.66); }
+
+.modal__box {
+  position: relative;
+  width: min(880px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 18px 48px var(--shadow);
+  animation: rise 0.18s ease-out;
+}
+
+.modal__head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 12px;
+  padding: 15px 18px; border-bottom: 1px solid var(--border);
+}
+.modal__head h2 { font-size: 15px; }
+.modal__body { padding: 14px 18px; overflow-y: auto; }
+.modal__foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 13px 18px; border-top: 1px solid var(--border); flex-wrap: wrap;
+}
+
+/* Поле количества прямо в строке таблицы */
+.qty-input {
+  width: 110px; padding: 5px 8px; text-align: right;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); font-family: var(--mono);
+}
+.qty-input:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* Колонка отметки в витринах */
+td.pick, th.pick { width: 34px; text-align: center; padding-left: 8px; padding-right: 4px; }
+.pick input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
