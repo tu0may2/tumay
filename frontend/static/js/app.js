@@ -11,6 +11,7 @@
     exportParamsLoaded: false,
     bondFiltersLoaded: false,
     bondMode: 'screen',
+    curveTilt: 'scenarios',
     analysisLoaded: false,
     screens: [],
     limitKinds: [],
@@ -1596,6 +1597,17 @@
     on('#limit-cancel', 'click', () => { $('#limit-form').hidden = true; });
     on('#limit-form', 'submit', submitLimit);
     on('#deal-check', 'click', checkDealAgainstLimits);
+
+    // Форма кривой в сценариях переоценки
+    $$('#curve-tilt button').forEach((button) => {
+      button.addEventListener('click', () => {
+        state.curveTilt = button.dataset.tilt;
+        $$('#curve-tilt button').forEach((other) =>
+          other.classList.toggle('is-active', other === button)
+        );
+        renderPortfolio();
+      });
+    });
 
     // Список наблюдения
     on('#w-add', 'click', addToWatchlist);

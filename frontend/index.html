@@ -329,7 +329,15 @@ SU26238RMFS4
             <span class="card__hint">переоценка облигаций</span>
           </header>
           <div class="card__body" id="sensitivity-chart"></div>
-          <p class="card__note">Оценка первого порядка: ΔV ≈ −Дюрация × Δставки × Стоимость.</p>
+          <div class="toolbar" style="border-top:1px solid var(--border-soft);border-bottom:none">
+            <div class="segmented" id="curve-tilt">
+              <button data-tilt="scenarios" class="is-active" type="button">Параллельный сдвиг</button>
+              <button data-tilt="scenarios_steepening" type="button">Кривая круче</button>
+              <button data-tilt="scenarios_flattening" type="button">Кривая положе</button>
+            </div>
+            <span class="card__hint" id="sensitivity-note"></span>
+          </div>
+          <p class="card__note">Переоценка второго порядка: ΔV/V ≈ −D_мод × Δy + ½ × C × Δy². Поправка на выпуклость смягчает потери при росте ставок и усиливает выигрыш при их падении.</p>
         </article>
       </div>
 
