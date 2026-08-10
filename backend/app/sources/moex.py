@@ -292,6 +292,12 @@ def _map_quote(
     if change_pct is None and last is not None and prev_close:
         change_pct = (last / prev_close - 1) * 100
 
+    # СВЦ предыдущего дня: биржа отдаёт её в справочном блоке
+    prev_wa_price = to_float(sec.get("PREVWAPRICE"))
+    change_to_prev_wap = to_float(md.get("WAPTOPREVWAPRICEPRCNT"))
+    if change_to_prev_wap is None and last is not None and prev_wa_price:
+        change_to_prev_wap = (last / prev_wa_price - 1) * 100
+
     quote = {
         "ts": ts,
         "trade_date": to_date(md.get("SYSTIME")) or date.today(),
@@ -300,8 +306,10 @@ def _map_quote(
         "high": to_float(md.get("HIGH")),
         "low": to_float(md.get("LOW")),
         "prev_close": prev_close,
-        "wa_price": to_float(md.get("WAPRICE")) or to_float(sec.get("PREVWAPRICE")),
+        "wa_price": to_float(md.get("WAPRICE")) or prev_wa_price,
+        "prev_wa_price": prev_wa_price,
         "change_pct": change_pct,
+        "change_to_prev_wap_pct": change_to_prev_wap,
         "bid": bid,
         "offer": offer,
         "spread": spread,
@@ -325,20 +333,34 @@ def _map_quote(
         quote["duration_days"] = to_int(yd.get("DURATION")) or to_int(md.get("DURATION"))
         quote["z_spread_bp"] = to_float(yd.get("ZSPREADBP"))
         quote["g_spread_bp"] = to_float(yd.get("GSPREADBP"))
+        # НКД на одну бумагу: покупатель платит его сверх цены
+        quote["accrued_interest"] = to_float(sec.get("ACCRUEDINT"))
 
     return quote
 
 
 def _map_bar(row: dict[str, Any]) -> dict:
-    """Дневная свеча из блока history."""
+    """Дневная свеча из блока history.
+
+    Для облигаций MOEX дополнительно отдаёт НКД (``ACCINT``), доходности и
+    дюрацию на дату — их и сохраняем, у акций эти поля останутся пустыми.
+    """
     return {
         "trade_date": to_date(row.get("TRADEDATE")),
         "open": to_float(row.get("OPEN")),
         "high": to_float(row.get("HIGH")),
         "low": to_float(row.get("LOW")),
         "close": to_float(row.get("CLOSE")) or to_float(row.get("LEGALCLOSEPRICE")),
+        "legal_close": to_float(row.get("LEGALCLOSEPRICE")),
         "wa_price": to_float(row.get("WAPRICE")),
         "volume": to_float(row.get("VOLUME")),
         "turnover": to_float(row.get("VALUE")),
         "num_trades": to_int(row.get("NUMTRADES")),
+        "accrued_interest": to_float(row.get("ACCINT")),
+        "yield_close": to_float(row.get("YIELDCLOSE")),
+        "yield_at_wap": to_float(row.get("YIELDATWAP")),
+        "duration_days": to_int(row.get("DURATION")),
+        "face_value": to_float(row.get("FACEVALUE")),
+        "coupon_percent": to_float(row.get("COUPONPERCENT")),
+        "currency": row.get("CURRENCYID") or row.get("FACEUNIT"),
     }

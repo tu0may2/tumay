@@ -50,7 +50,45 @@
     return payload;
   }
 
+  /**
+   * Скачать файл, отданный сервером как вложение.
+   * Имя берём из Content-Disposition, чтобы совпадало с тем, что дал бэкенд.
+   */
+  async function download(path, { method = 'GET', params, body } = {}) {
+    const options = { method, headers: {} };
+    if (body !== undefined) {
+      options.headers['Content-Type'] = 'application/json';
+      options.body = JSON.stringify(body);
+    }
+    const response = await fetch(BASE + path + buildQuery(params), options);
+    if (!response.ok) {
+      let message = `Ошибка ${response.status}`;
+      try {
+        const payload = await response.json();
+        if (typeof payload.detail === 'string') message = payload.detail;
+      } catch (error) { /* тело не JSON — оставляем код ошибки */ }
+      throw new Error(message);
+    }
+
+    const disposition = response.headers.get('content-disposition') || '';
+    const match = /filename\*=UTF-8''([^;]+)/i.exec(disposition);
+    const filename = match ? decodeURIComponent(match[1]) : 'выгрузка';
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    // Отзываем ссылку не сразу: Safari успевает начать скачивание
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    return filename;
+  }
+
   global.api = {
+    download,
     overview: () => request('/api/overview'),
     instruments: (params) => request('/api/instruments', { params }),
     instrument: (secid, params) => request(`/api/instruments/${encodeURIComponent(secid)}`, { params }),
@@ -67,6 +105,10 @@
     runs: (params) => request('/api/collect/runs', { params }),
     collect: (withHistory = true) =>
       request('/api/collect', { method: 'POST', body: { with_history: withHistory } }),
+    bondAnalysis: (params) => request('/api/bonds/analysis', { params }),
+    bondFilters: () => request('/api/bonds/filters'),
+    exportParameters: () => request('/api/export/parameters'),
+    exportPreview: (body) => request('/api/export/preview', { method: 'POST', body }),
     portfolio: (name) => request('/api/portfolio', { params: { name } }),
     portfolioNames: () => request('/api/portfolio/names'),
     sensitivity: (name) => request('/api/portfolio/sensitivity', { params: { name } }),

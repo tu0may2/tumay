@@ -1,14 +1,17 @@
 """Подключение к БД и управление сессиями."""
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import settings
 from .models import Base
+
+logger = logging.getLogger(__name__)
 
 _connect_args = (
     {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
@@ -38,8 +41,40 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 
 
 def init_db() -> None:
-    """Создать таблицы, если их ещё нет."""
+    """Создать таблицы и дописать недостающие колонки."""
     Base.metadata.create_all(bind=engine)
+    _add_missing_columns()
+
+
+def _add_missing_columns() -> None:
+    """Лёгкая миграция: добавить колонки, появившиеся в новых версиях.
+
+    ``create_all`` создаёт только отсутствующие таблицы и не трогает уже
+    существующие, поэтому на базе, созданной прежней версией, новые поля
+    (НКД, средневзвешенная цена предыдущего дня) иначе не появятся.
+    """
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    with engine.begin() as connection:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            present = {col["name"] for col in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in present:
+                    continue
+                ddl = column.type.compile(dialect=engine.dialect)
+                # Новые колонки всегда nullable, поэтому значение по умолчанию
+                # не нужно — старые строки просто получат NULL
+                connection.execute(
+                    text(f'ALTER TABLE {table.name} ADD COLUMN "{column.name}" {ddl}')
+                )
+                logger.info(
+                    "Миграция: в таблицу %s добавлена колонка %s",
+                    table.name,
+                    column.name,
+                )
 
 
 @contextmanager

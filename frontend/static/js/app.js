@@ -6,7 +6,38 @@
     view: 'overview',
     loaded: {},
     portfolioName: null,
+    exportMode: 'by_date',
+    exportReady: false,
+    exportParamsLoaded: false,
+    bondFiltersLoaded: false,
   };
+
+  const THEME_KEY = 'treasury-theme';
+
+  /** Применить тему и запомнить выбор между сессиями. */
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    const button = document.getElementById('btn-theme');
+    if (button) {
+      // Ёлка на тёмной теме, снежинка на светлой — что включится по нажатию
+      button.textContent = theme === 'light' ? '🌲' : '❄️';
+      button.title = theme === 'light' ? 'Тёмная тема' : 'Светлая тема';
+    }
+    try {
+      localStorage.setItem(THEME_KEY, theme);
+    } catch (error) { /* приватный режим — просто не запоминаем */ }
+  }
+
+  function initialTheme() {
+    try {
+      const saved = localStorage.getItem(THEME_KEY);
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch (error) { /* хранилище недоступно */ }
+    // Иначе следуем настройке системы
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+      ? 'light'
+      : 'dark';
+  }
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
@@ -53,6 +84,30 @@
 
   function changeCell(value) {
     return `<span class="${fmt.trendClass(value)}">${fmt.signedPct(value)}</span>`;
+  }
+
+  /**
+   * Премия к безрисковой кривой.
+   * Значения в тысячи базисных пунктов — это не доходность, а признак того,
+   * что рынок закладывает дефолт: показываем словом, а не числом, чтобы такую
+   * бумагу не приняли за выгодную покупку.
+   */
+  function premiumCell(value) {
+    if (!fmt.isNum(value)) return '<span class="dim">—</span>';
+    if (value > 5000) {
+      return '<span class="badge badge--down" title="Премия свыше 5000 бп: рынок оценивает выпуск как проблемный">дефолтный риск</span>';
+    }
+    const cls = value > 1000 ? 'badge--down' : value > 300 ? 'badge--warn' : 'badge--up';
+    const mark = value > 1000 ? ' ⚠' : '';
+    return `<span class="badge ${cls}">${fmt.bp(value)}${mark}</span>`;
+  }
+
+  /** Цвет из текущей темы — чтобы графики перекрашивались вместе с ней. */
+  function themeColor(name, fallback) {
+    const value = getComputedStyle(document.documentElement)
+      .getPropertyValue(name)
+      .trim();
+    return value || fallback;
   }
 
   /**
@@ -211,7 +266,7 @@
       container,
       [{
         name: 'КБД',
-        color: '#2f81f7',
+        color: themeColor('--accent', '#3f9d6d'),
         points: curve.points.map((point) => ({
           x: point.period_years,
           y: point.value,
@@ -245,8 +300,8 @@
       charts.lineChart(
         container,
         [
-          { name: 'Ключевая ставка', color: '#2f81f7', points: toPoints(keyRate) },
-          { name: 'RUONIA', color: '#d29922', points: toPoints(ruonia) },
+          { name: 'Ключевая ставка', color: themeColor('--accent', '#3f9d6d'), points: toPoints(keyRate) },
+          { name: 'RUONIA', color: themeColor('--warn', '#d9a441'), points: toPoints(ruonia) },
         ],
         {
           height: 220,
@@ -380,31 +435,7 @@
         { title: 'Цена, %', className: 'num', render: (row) => fmt.price(row.last) },
         { title: 'Доходность', className: 'num', render: (row) => `<b>${fmt.pct(row.yield_pct)}</b>` },
         { title: 'КБД', className: 'num', render: (row) => fmt.pct(row.curve_yield_pct) },
-        {
-          title: 'Премия',
-          className: 'num',
-          render: (row) => {
-            const value = row.spread_to_curve_bp;
-            if (!fmt.isNum(value)) return '<span class="dim">—</span>';
-            // Премия свыше 1000 бп почти всегда означает не доходность,
-            // а проблемы у эмитента: помечаем отдельно, чтобы её не покупали
-            // «по верхней строчке сортировки».
-            let cls = 'badge--up';
-            let hint = 'Премия к безрисковой кривой';
-            if (value > 1000) {
-              cls = 'badge--down';
-              hint = 'Аномальная премия: вероятны проблемы у эмитента — проверьте кредитное качество';
-            } else if (value > 300) {
-              cls = 'badge--warn';
-              hint = 'Повышенная премия: требуется оценка кредитного риска';
-            } else if (value < 0) {
-              cls = '';
-              hint = 'Доходность ниже кривой';
-            }
-            const mark = value > 1000 ? ' ⚠' : '';
-            return `<span class="badge ${cls}" title="${hint}">${fmt.bp(value)}${mark}</span>`;
-          },
-        },
+        { title: 'Премия', className: 'num', render: (row) => premiumCell(row.spread_to_curve_bp) },
         { title: 'Дюрация', className: 'num', render: (row) => (fmt.isNum(row.duration_years) ? fmt.num(row.duration_years, 2) + ' л' : '—') },
         { title: 'Купон', className: 'num', render: (row) => fmt.pct(row.coupon_percent) },
         { title: 'Оборот, ₽', className: 'num', render: (row) => fmt.money(row.turnover) },
@@ -416,6 +447,234 @@
       });
     } catch (error) {
       failure(container, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Анализ облигаций
+  // ------------------------------------------------------------------
+  /** Собрать параметры запроса из панели фильтров. */
+  function analysisParams() {
+    const num = (selector) => {
+      const value = parseFloat($(selector).value);
+      return isNaN(value) ? null : value;
+    };
+    const pick = (selector) => $(selector).value || null;
+    const bool = (selector) => {
+      const value = $(selector).value;
+      return value === '' ? null : value;
+    };
+
+    const params = {
+      search: $('#a-search').value.trim() || null,
+      min_yield: num('#a-minyield'),
+      max_yield: num('#a-maxyield'),
+      min_duration_years: num('#a-mindur'),
+      max_duration_years: num('#a-maxdur'),
+      maturity_from: pick('#a-matfrom'),
+      maturity_to: pick('#a-matto'),
+      min_turnover: (num('#a-turnover') || 0) * 1e6,
+      max_risk_score: num('#a-risk'),
+      has_offer: bool('#a-offer'),
+      has_amortization: bool('#a-amort'),
+      sort_by: $('#a-sort').value,
+      limit: 300,
+    };
+    const coupon = pick('#a-coupon');
+    if (coupon) params.coupon_type = [coupon];
+    const level = pick('#a-level');
+    if (level) params.list_level = [level];
+    const currency = pick('#a-currency');
+    if (currency) params.currency = [currency];
+    return params;
+  }
+
+  const RISK_BADGES = {
+    'низкий': 'badge--up',
+    'умеренный': 'badge--accent',
+    'повышенный': 'badge--warn',
+    'высокий': 'badge--down',
+  };
+
+  async function renderAnalysis() {
+    const container = $('#analysis-table');
+    loading(container);
+
+    try {
+      if (!state.bondFiltersLoaded) {
+        state.bondFiltersLoaded = true;
+        const options = await api.bondFilters();
+        const select = $('#a-currency');
+        options.currencies.forEach((code) => {
+          const option = document.createElement('option');
+          option.value = code;
+          option.textContent = code;
+          select.appendChild(option);
+        });
+      }
+
+      const data = await api.bondAnalysis(analysisParams());
+      $('#analysis-count').textContent =
+        `${fmt.int(data.total)} ${fmt.plural(data.total, 'выпуск', 'выпуска', 'выпусков')}` +
+        (data.curve_date ? ` · КБД на ${fmt.date(data.curve_date)}` : '');
+
+      renderTable(container, [
+        { title: 'Выпуск', render: (row) => secCell(row) },
+        { title: 'ISIN', render: (row) => `<span class="dim" style="font-family:var(--mono);font-size:11px">${fmt.esc(row.isin || '—')}</span>` },
+        { title: 'Погашение', render: (row) => `<span class="dim">${fmt.date(row.maturity_date)}</span>` },
+        { title: 'Лет', className: 'num', render: (row) => fmt.num(row.years_to_maturity, 2) },
+        { title: 'Цена, %', className: 'num', render: (row) => fmt.price(row.last) },
+        { title: 'СВЦ вчера', className: 'num', render: (row) => fmt.price(row.prev_wa_price) },
+        { title: 'НКД', className: 'num', render: (row) => fmt.num(row.accrued_interest, 2) },
+        { title: 'Полная цена', className: 'num', render: (row) => fmt.num(row.dirty_price, 2) },
+        { title: 'Доходность', className: 'num', render: (row) => `<b>${fmt.pct(row.yield_pct)}</b>` },
+        { title: 'Текущая', className: 'num', render: (row) => fmt.pct(row.current_yield_pct) },
+        { title: 'Премия', className: 'num', render: (row) => premiumCell(row.spread_to_curve_bp) },
+        { title: 'Дюрация', className: 'num', render: (row) => (fmt.isNum(row.duration_years) ? fmt.num(row.duration_years, 2) + ' л' : '—') },
+        { title: 'Купон', className: 'num', render: (row) => fmt.pct(row.coupon_percent) },
+        { title: 'Тип купона', render: (row) => `<span class="badge">${fmt.esc(row.coupon_type_title || '—')}</span>` },
+        { title: 'Аморт.', render: (row) => (row.has_amortization ? '<span class="badge badge--accent">да</span>' : '<span class="dim">нет</span>') },
+        { title: 'Оферта', render: (row) => (row.has_offer ? `<span class="badge badge--warn">${row.offer_date ? fmt.date(row.offer_date) : 'есть'}</span>` : '<span class="dim">нет</span>') },
+        { title: 'Оборот, ₽', className: 'num', render: (row) => fmt.money(row.turnover) },
+        { title: 'Ликв.', className: 'num', render: (row) => liquidityCell(row.liquidity_score) },
+        { title: 'Ур.', className: 'num', render: (row) => `<span class="badge">${row.list_level || '—'}</span>` },
+        {
+          title: 'Риск',
+          className: 'num',
+          render: (row) => {
+            const cls = RISK_BADGES[row.risk_band] || '';
+            const hint = (row.risk_reasons || []).join('; ') || 'Расчётная оценка по рыночным данным';
+            return `<span class="badge ${cls}" title="${fmt.esc(hint)}">${fmt.num(row.risk_score, 0)} · ${fmt.esc(row.risk_band || '')}</span>`;
+          },
+        },
+      ], data.items, {
+        rowKey: (row) => row.secid,
+        onRowClick: openInstrument,
+        emptyMessage: 'Нет выпусков под заданные условия — ослабьте фильтры',
+      });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  async function downloadAnalysis(format) {
+    try {
+      // Фильтры те же, что на экране, но в файл отдаём больше строк
+      const params = Object.assign(analysisParams(), { fmt: format, limit: 2000 });
+      const name = await api.download('/api/bonds/analysis/download', { params });
+      toast(`Файл сформирован: ${name}`);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Выгрузка по списку бумаг
+  // ------------------------------------------------------------------
+  async function renderExportParams() {
+    if (state.exportParamsLoaded) return;
+    const container = $('#e-params');
+    try {
+      const catalog = await api.exportParameters();
+      container.innerHTML = catalog.groups
+        .map((group) => `
+          <div class="param-group">
+            <div class="param-group__title">${fmt.esc(group.group)}</div>
+            ${group.items.map((item) => `
+              <label class="check">
+                <input type="checkbox" value="${fmt.esc(item.code)}" ${item.default ? 'checked' : ''}>
+                <span>${fmt.esc(item.title)}</span>
+              </label>`).join('')}
+          </div>`)
+        .join('');
+      state.exportParamsLoaded = true;
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  function exportBody() {
+    const checked = $$('#e-params input[type="checkbox"]:checked').map((node) => node.value);
+    return {
+      securities: $('#e-securities').value,
+      date_from: $('#e-from').value,
+      date_to: $('#e-to').value,
+      parameters: checked,
+      mode: state.exportMode,
+    };
+  }
+
+  async function runExport() {
+    const container = $('#e-table');
+    const body = exportBody();
+
+    if (!body.securities.trim()) {
+      toast('Вставьте список бумаг', true);
+      return;
+    }
+    if (!body.parameters.length) {
+      toast('Отметьте хотя бы один параметр', true);
+      return;
+    }
+
+    const button = $('#e-run');
+    button.disabled = true;
+    button.textContent = 'Загружаю с биржи…';
+    loading(container);
+
+    try {
+      const data = await api.exportPreview(body);
+      state.exportReady = data.rows.length > 0;
+
+      $('#e-warnings').innerHTML = data.warnings.length
+        ? `<div class="warnings">${data.warnings
+            .map((text) => `<div class="warnings__item">${fmt.esc(text)}</div>`)
+            .join('')}</div>`
+        : '';
+
+      $('#e-count').textContent = data.rows.length
+        ? `${fmt.int(data.rows.length)} ${fmt.plural(data.rows.length, 'строка', 'строки', 'строк')} · ${data.found.length} ${fmt.plural(data.found.length, 'бумага', 'бумаги', 'бумаг')}`
+        : '';
+
+      // Колонки приходят с сервера — таблица на экране совпадает с файлом
+      const columns = data.columns.map((column) => ({
+        title: fmt.esc(column.title),
+        className: column.kind === 'number' ? 'num' : '',
+        render: (row) => {
+          const value = row[column.code];
+          if (value === null || value === undefined) return '<span class="dim">—</span>';
+          if (column.kind === 'date') return fmt.date(value);
+          if (column.kind === 'number') return fmt.num(value, column.digits ?? 2);
+          return fmt.esc(value);
+        },
+      }));
+
+      renderTable(container, columns, data.rows, {
+        emptyMessage: 'Данных за период нет — проверьте бумаги и даты',
+      });
+
+      $('#e-xlsx').disabled = !state.exportReady;
+      $('#e-csv').disabled = !state.exportReady;
+    } catch (error) {
+      failure(container, error);
+      state.exportReady = false;
+      $('#e-xlsx').disabled = true;
+      $('#e-csv').disabled = true;
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Показать данные';
+    }
+  }
+
+  async function downloadExport(format) {
+    try {
+      const name = await api.download(`/api/export/download?fmt=${format}`, {
+        method: 'POST',
+        body: exportBody(),
+      });
+      toast(`Файл сформирован: ${name}`);
+    } catch (error) {
+      toast(error.message, true);
     }
   }
 
@@ -802,6 +1061,8 @@
     overview: renderOverview,
     instruments: renderInstruments,
     bonds: renderBonds,
+    analysis: renderAnalysis,
+    export: renderExportParams,
     portfolio: renderPortfolio,
     signals: renderSignals,
     sources: renderSources,
@@ -859,15 +1120,60 @@
   }
 
   function init() {
-    $('#d-date').value = new Date().toISOString().slice(0, 10);
+    applyTheme(initialTheme());
+
+    const today = new Date();
+    const isoToday = today.toISOString().slice(0, 10);
+    const monthAgo = new Date(today.getTime() - 30 * 86400000).toISOString().slice(0, 10);
+    $('#d-date').value = isoToday;
+    $('#e-from').value = monthAgo;
+    $('#e-to').value = isoToday;
 
     $$('.tab').forEach((tab) => {
       tab.addEventListener('click', () => switchView(tab.dataset.view));
     });
 
+    $('#btn-theme').addEventListener('click', () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      applyTheme(current === 'light' ? 'dark' : 'light');
+    });
+
     $('#btn-refresh').addEventListener('click', refresh);
     $('#btn-collect').addEventListener('click', collect);
     $('#deal-form').addEventListener('submit', submitDeal);
+
+    // Анализ облигаций
+    const onAnalysisFilter = debounce(renderAnalysis);
+    ['#a-search', '#a-minyield', '#a-maxyield', '#a-mindur', '#a-maxdur',
+     '#a-matfrom', '#a-matto', '#a-turnover', '#a-risk'].forEach((selector) =>
+      $(selector).addEventListener('input', onAnalysisFilter)
+    );
+    ['#a-coupon', '#a-level', '#a-currency', '#a-offer', '#a-amort', '#a-sort'].forEach(
+      (selector) => $(selector).addEventListener('change', renderAnalysis)
+    );
+    $('#analysis-xlsx').addEventListener('click', () => downloadAnalysis('xlsx'));
+    $('#analysis-csv').addEventListener('click', () => downloadAnalysis('csv'));
+
+    // Выгрузка
+    $('#e-run').addEventListener('click', runExport);
+    $('#e-xlsx').addEventListener('click', () => downloadExport('xlsx'));
+    $('#e-csv').addEventListener('click', () => downloadExport('csv'));
+    $('#e-all').addEventListener('click', () => {
+      const boxes = $$('#e-params input[type="checkbox"]');
+      const allChecked = boxes.every((box) => box.checked);
+      boxes.forEach((box) => { box.checked = !allChecked; });
+      $('#e-all').textContent = allChecked ? 'Выбрать все' : 'Снять все';
+    });
+    $$('#e-mode button').forEach((button) => {
+      button.addEventListener('click', () => {
+        state.exportMode = button.dataset.mode;
+        $$('#e-mode button').forEach((other) =>
+          other.classList.toggle('is-active', other === button)
+        );
+        // Форма таблицы изменилась — прежний результат больше не соответствует
+        if (state.exportReady) runExport();
+      });
+    });
 
     const onInstrumentFilter = debounce(renderInstruments);
     ['#f-search', '#f-turnover', '#f-liquidity'].forEach((selector) =>

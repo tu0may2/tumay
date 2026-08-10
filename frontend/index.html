@@ -21,6 +21,7 @@
 
     <div class="topbar__actions">
       <span class="status" id="status" title="Время последнего среза">—</span>
+      <button class="btn theme-toggle" id="btn-theme" type="button" title="Сменить тему">🌲</button>
       <button class="btn" id="btn-refresh" type="button">Обновить</button>
       <button class="btn btn--primary" id="btn-collect" type="button">Собрать данные</button>
     </div>
@@ -30,6 +31,8 @@
     <button class="tab tab--active" data-view="overview" type="button">Обзор рынка</button>
     <button class="tab" data-view="instruments" type="button">Инструменты</button>
     <button class="tab" data-view="bonds" type="button">Облигации</button>
+    <button class="tab" data-view="analysis" type="button">Анализ облигаций</button>
+    <button class="tab" data-view="export" type="button">Выгрузка</button>
     <button class="tab" data-view="portfolio" type="button">Портфель</button>
     <button class="tab" data-view="signals" type="button">Сигналы</button>
     <button class="tab" data-view="sources" type="button">Источники</button>
@@ -165,6 +168,177 @@
         </div>
         <div class="card__body table-wrap" id="bonds-table"></div>
         <p class="card__note">Премия к КБД показывает, сколько базисных пунктов бумага платит сверх безрисковой кривой на своей дюрации. Умеренная премия — плата за кредитный риск, премия свыше 1000 бп (помечена ⚠) почти всегда сигнализирует о проблемах эмитента, а не о выгодной покупке. Сверяйте с уровнем листинга и оборотом.</p>
+      </article>
+    </section>
+
+    <!-- Анализ облигаций -->
+    <section class="view" id="view-analysis">
+      <article class="card">
+        <header class="card__head">
+          <h2>Анализ облигаций</h2>
+          <div class="card__tools">
+            <span class="card__hint" id="analysis-count"></span>
+            <button class="btn btn--sm" id="analysis-xlsx" type="button">Excel</button>
+            <button class="btn btn--sm" id="analysis-csv" type="button">CSV</button>
+          </div>
+        </header>
+
+        <div class="filters">
+          <label class="field">
+            <span>Поиск</span>
+            <input type="search" id="a-search" placeholder="Код, эмитент или ISIN">
+          </label>
+          <label class="field">
+            <span>Доходность от, %</span>
+            <input type="number" id="a-minyield" step="0.5" placeholder="—">
+          </label>
+          <label class="field">
+            <span>Доходность до, %</span>
+            <input type="number" id="a-maxyield" step="0.5" placeholder="—">
+          </label>
+          <label class="field">
+            <span>Дюрация от, лет</span>
+            <input type="number" id="a-mindur" step="0.5" placeholder="—">
+          </label>
+          <label class="field">
+            <span>Дюрация до, лет</span>
+            <input type="number" id="a-maxdur" step="0.5" placeholder="—">
+          </label>
+          <label class="field">
+            <span>Погашение с</span>
+            <input type="date" id="a-matfrom">
+          </label>
+          <label class="field">
+            <span>Погашение по</span>
+            <input type="date" id="a-matto">
+          </label>
+          <label class="field">
+            <span>Оборот от, млн ₽</span>
+            <input type="number" id="a-turnover" min="0" step="0.5" value="1">
+          </label>
+          <label class="field">
+            <span>Тип купона</span>
+            <select id="a-coupon">
+              <option value="">Любой</option>
+              <option value="fixed">Фиксированный</option>
+              <option value="float">Переменный</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Уровень листинга</span>
+            <select id="a-level">
+              <option value="">Любой</option>
+              <option value="1">Первый</option>
+              <option value="2">Второй</option>
+              <option value="3">Третий</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Валюта</span>
+            <select id="a-currency"><option value="">Любая</option></select>
+          </label>
+          <label class="field">
+            <span>Оферта</span>
+            <select id="a-offer">
+              <option value="">Неважно</option>
+              <option value="true">Есть</option>
+              <option value="false">Нет</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Амортизация</span>
+            <select id="a-amort">
+              <option value="">Неважно</option>
+              <option value="true">Есть</option>
+              <option value="false">Нет</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Риск не выше</span>
+            <input type="number" id="a-risk" min="0" max="100" step="5" placeholder="0–100">
+          </label>
+          <label class="field">
+            <span>Сортировка</span>
+            <select id="a-sort">
+              <option value="turnover">Оборот</option>
+              <option value="yield_pct">Доходность</option>
+              <option value="spread_to_curve_bp">Премия к КБД</option>
+              <option value="duration_years">Дюрация</option>
+              <option value="turnover">Оборот</option>
+              <option value="risk_score">Оценка риска</option>
+              <option value="years_to_maturity">Срок до погашения</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="card__body table-wrap" id="analysis-table"></div>
+        <p class="card__note">
+          Все показатели рассчитаны по данным первоисточников: цены, доходности, дюрация и объёмы — Московская биржа (ISS),
+          безрисковая кривая — КБД МосБиржи, график купонов, амортизаций и оферт — раскрытие через НРД.
+          <b>Оценка риска — расчётная величина</b> из премии к кривой, уровня листинга и ликвидности; это не кредитный
+          рейтинг агентства: рейтинги АКРА и Эксперт РА в открытом машиночитаемом виде не публикуются.
+        </p>
+      </article>
+    </section>
+
+    <!-- Выгрузка -->
+    <section class="view" id="view-export">
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head"><h2>Список бумаг</h2></header>
+          <div class="card__body">
+            <label class="field">
+              <span>Вставьте из Excel: ISIN или тикеры</span>
+              <textarea class="paste" id="e-securities" spellcheck="false"
+placeholder="RU000A105SG2
+SBER
+SU26238RMFS4
+
+Можно столбцом из Excel, через запятую или пробел"></textarea>
+            </label>
+            <div class="filters" style="padding:12px 0 0;border:none;background:none">
+              <label class="field">
+                <span>Период с</span>
+                <input type="date" id="e-from">
+              </label>
+              <label class="field">
+                <span>по</span>
+                <input type="date" id="e-to">
+              </label>
+            </div>
+          </div>
+        </article>
+
+        <article class="card">
+          <header class="card__head">
+            <h2>Какие параметры нужны</h2>
+            <button class="btn btn--sm" id="e-all" type="button">Выбрать все</button>
+          </header>
+          <div class="card__body param-groups" id="e-params"></div>
+        </article>
+      </div>
+
+      <article class="card">
+        <div class="toolbar">
+          <div class="segmented" id="e-mode">
+            <button data-mode="by_date" class="is-active" type="button">Построчно по датам</button>
+            <button data-mode="summary" type="button">Свод за период</button>
+          </div>
+          <button class="btn btn--primary" id="e-run" type="button">Показать данные</button>
+          <div class="toolbar__spacer"></div>
+          <span class="card__hint" id="e-count"></span>
+          <button class="btn btn--sm" id="e-xlsx" type="button" disabled>Скачать Excel</button>
+          <button class="btn btn--sm" id="e-csv" type="button" disabled>Скачать CSV</button>
+        </div>
+        <div id="e-warnings"></div>
+        <div class="card__body table-wrap" id="e-table">
+          <div class="empty">Вставьте список бумаг, задайте период и нажмите «Показать данные»</div>
+        </div>
+        <p class="card__note">
+          Данные берутся напрямую с Московской биржи по каждой бумаге, включая те, которых ещё нет в локальной базе.
+          «Построчно по датам» повторяет таблицу торгов MOEX, «Свод за период» даёт одну строку на бумагу для сравнения.
+          В выгрузку уходит ровно то, что показано на экране.
+        </p>
       </article>
     </section>
 

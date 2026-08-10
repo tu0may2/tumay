@@ -102,8 +102,8 @@
     if (opts.area && active.length === 1) {
       const defs = el('defs');
       const grad = el('linearGradient', { id: 'area-grad', x1: 0, y1: 0, x2: 0, y2: 1 });
-      grad.appendChild(el('stop', { offset: '0%', 'stop-color': active[0].color || '#2f81f7', 'stop-opacity': 0.28 }));
-      grad.appendChild(el('stop', { offset: '100%', 'stop-color': active[0].color || '#2f81f7', 'stop-opacity': 0 }));
+      grad.appendChild(el('stop', { offset: '0%', 'stop-color': active[0].color || 'currentColor', 'stop-opacity': 0.28 }));
+      grad.appendChild(el('stop', { offset: '100%', 'stop-color': active[0].color || 'currentColor', 'stop-opacity': 0 }));
       defs.appendChild(grad);
       svg.appendChild(defs);
     }
@@ -168,7 +168,7 @@
         const item = document.createElement('span');
         item.className = 'legend__item';
         item.innerHTML =
-          `<span class="legend__swatch" style="background:${serie.color || '#2f81f7'}"></span>` +
+          `<span class="legend__swatch" style="background:${serie.color || 'var(--accent)'}"></span>` +
           fmt.esc(serie.name || '');
         legend.appendChild(item);
       });
@@ -259,8 +259,10 @@
 
     const defs = el('defs');
     const grad = el('linearGradient', { id: 'area-grad', x1: 0, y1: 0, x2: 0, y2: 1 });
-    grad.appendChild(el('stop', { offset: '0%', 'stop-color': '#2f81f7', 'stop-opacity': 0.3 }));
-    grad.appendChild(el('stop', { offset: '100%', 'stop-color': '#2f81f7', 'stop-opacity': 0 }));
+    const accent = getComputedStyle(document.documentElement)
+      .getPropertyValue('--accent').trim() || '#3f9d6d';
+    grad.appendChild(el('stop', { offset: '0%', 'stop-color': accent, 'stop-opacity': 0.3 }));
+    grad.appendChild(el('stop', { offset: '100%', 'stop-color': accent, 'stop-opacity': 0 }));
     defs.appendChild(grad);
     svg.appendChild(defs);
 

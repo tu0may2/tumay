@@ -101,7 +101,12 @@ class Quote(Base):
     low: Mapped[float | None] = mapped_column(Float)
     prev_close: Mapped[float | None] = mapped_column(Float)
     wa_price: Mapped[float | None] = mapped_column(Float)
+    # Средневзвешенная цена предыдущего торгового дня — база расчёта
+    # рыночной цены и ориентир при оценке сегодняшних уровней
+    prev_wa_price: Mapped[float | None] = mapped_column(Float)
     change_pct: Mapped[float | None] = mapped_column(Float)
+    # Изменение к СВЦ предыдущего дня, %
+    change_to_prev_wap_pct: Mapped[float | None] = mapped_column(Float)
 
     bid: Mapped[float | None] = mapped_column(Float)
     offer: Mapped[float | None] = mapped_column(Float)
@@ -120,6 +125,8 @@ class Quote(Base):
     duration_days: Mapped[int | None] = mapped_column(Integer)
     z_spread_bp: Mapped[float | None] = mapped_column(Float)
     g_spread_bp: Mapped[float | None] = mapped_column(Float)
+    # Накопленный купонный доход на одну облигацию, в валюте номинала
+    accrued_interest: Mapped[float | None] = mapped_column(Float)
 
     trading_status: Mapped[str | None] = mapped_column(String(8))
     source: Mapped[str] = mapped_column(String(16), default="moex")
@@ -146,10 +153,21 @@ class Bar(Base):
     high: Mapped[float | None] = mapped_column(Float)
     low: Mapped[float | None] = mapped_column(Float)
     close: Mapped[float | None] = mapped_column(Float)
+    legal_close: Mapped[float | None] = mapped_column(Float)
+    #: Средневзвешенная цена дня — то, что MOEX показывает как СВЦ
     wa_price: Mapped[float | None] = mapped_column(Float)
     volume: Mapped[float | None] = mapped_column(Float)
     turnover: Mapped[float | None] = mapped_column(Float)
     num_trades: Mapped[int | None] = mapped_column(Integer)
+
+    # Облигационные поля дня (у акций остаются пустыми)
+    accrued_interest: Mapped[float | None] = mapped_column(Float)
+    yield_close: Mapped[float | None] = mapped_column(Float)
+    yield_at_wap: Mapped[float | None] = mapped_column(Float)
+    duration_days: Mapped[int | None] = mapped_column(Integer)
+    face_value: Mapped[float | None] = mapped_column(Float)
+    coupon_percent: Mapped[float | None] = mapped_column(Float)
+    currency: Mapped[str | None] = mapped_column(String(8))
 
     instrument: Mapped[Instrument] = relationship(back_populates="bars")
 

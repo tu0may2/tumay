@@ -206,7 +206,9 @@ def build_row(
         "low": quote.low,
         "prev_close": quote.prev_close,
         "wa_price": quote.wa_price,
+        "prev_wa_price": quote.prev_wa_price,
         "change_pct": quote.change_pct,
+        "change_to_prev_wap_pct": _round(quote.change_to_prev_wap_pct, 2),
         "bid": quote.bid,
         "offer": quote.offer,
         "spread": quote.spread,
@@ -223,6 +225,21 @@ def build_row(
         duration_years = (
             quote.duration_days / 365 if quote.duration_days is not None else None
         )
+        # НКД берём из среза, а если биржа его не прислала — из справочника
+        accrued = (
+            quote.accrued_interest
+            if quote.accrued_interest is not None
+            else instrument.accrued_interest
+        )
+        # Полная («грязная») цена — то, что фактически платит покупатель:
+        # котировка в % от номинала плюс накопленный купонный доход
+        dirty_price = None
+        settlement_amount = None
+        price = quote.last or quote.wa_price or quote.prev_close
+        if price is not None and instrument.face_value:
+            clean_amount = price / 100 * instrument.face_value
+            settlement_amount = clean_amount + (accrued or 0)
+            dirty_price = settlement_amount / instrument.face_value * 100
         benchmark = (
             curve_yield_at(curve_points, duration_years)
             if curve_points and duration_years is not None
@@ -238,8 +255,12 @@ def build_row(
                 "maturity_date": instrument.maturity_date,
                 "offer_date": instrument.offer_date,
                 "coupon_percent": instrument.coupon_percent,
+                "coupon_value": instrument.coupon_value,
+                "coupon_period": instrument.coupon_period,
                 "next_coupon_date": instrument.next_coupon_date,
-                "accrued_interest": instrument.accrued_interest,
+                "accrued_interest": _round(accrued, 2),
+                "dirty_price": _round(dirty_price, 4),
+                "settlement_amount": _round(settlement_amount, 2),
                 "bond_type": instrument.bond_type,
                 "curve_yield_pct": _round(benchmark, 2),
                 # Премия к безрисковой кривой — главный ориентир relative value
