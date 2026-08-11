@@ -238,9 +238,18 @@
    * bars: [{ trade_date, close, volume }]
    */
   function priceVolumeChart(container, rows, options = {}) {
-    const opts = Object.assign({ height: 260, priceFormat: (v) => fmt.num(v, 2) }, options);
+    const opts = Object.assign(
+      {
+        height: 260,
+        priceFormat: (v) => fmt.num(v, 2),
+        // Подпись оси: по дням это дата, внутри сессии — время
+        xFormat: (v) => fmt.dateShort(v),
+        xFormatFull: null,
+      },
+      options
+    );
     const data = (rows || []).filter((r) => r.close !== null && r.close !== undefined);
-    if (!data.length) return empty(container, 'Нет истории торгов');
+    if (!data.length) return empty(container, opts.emptyMessage || 'Нет истории торгов');
 
     const svg = createSvg(container, opts.height);
     const priceH = opts.height * 0.62;
@@ -291,8 +300,9 @@
       });
       rect.appendChild(
         el('title', {},
-          `${fmt.date(row.trade_date)}\nЦена: ${fmt.num(row.close, 2)}\n` +
-          `Объём: ${fmt.int(row.volume)}\nОборот: ${fmt.money(row.turnover)} ₽`)
+          `${(opts.xFormatFull || opts.xFormat)(row.trade_date)}\n` +
+          `Цена: ${fmt.num(row.close, 2)}\nОбъём: ${fmt.int(row.volume)}` +
+          (row.turnover ? `\nОборот: ${fmt.money(row.turnover)} ₽` : ''))
       );
       svg.appendChild(rect);
     });
@@ -310,7 +320,7 @@
           x: scaleX(i),
           y: opts.height - 8,
           'text-anchor': 'middle',
-        }, fmt.dateShort(row.trade_date))
+        }, opts.xFormat(row.trade_date))
       );
     });
     return svg;

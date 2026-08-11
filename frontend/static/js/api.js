@@ -140,6 +140,12 @@
     benchmark: (name, days) => request('/api/benchmark', { params: { name, days } }),
     spreadHistory: (secid, days) =>
       request(`/api/instruments/${encodeURIComponent(secid)}/spread-history`, { params: { days } }),
+    intraday: (secid, params) =>
+      request(`/api/instruments/${encodeURIComponent(secid)}/intraday`, { params }),
+    accrued: (secid, onDate) =>
+      request(`/api/instruments/${encodeURIComponent(secid)}/accrued`, {
+        params: { on_date: onDate },
+      }),
     limitKinds: () => request('/api/limits/kinds'),
     limits: (portfolio) => request('/api/limits', { params: { portfolio } }),
     createLimit: (body) => request('/api/limits', { method: 'POST', body }),

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..models import Bar, CorpAction, FxRate, Instrument, MacroRate, Quote
-from ..services import analytics
+from ..services import accrual, analytics, intraday
 from ..sources.moex import BOARD_SPECS
 
 router = APIRouter(prefix="/api", tags=["Рынок"])
@@ -127,7 +127,76 @@ def get_instrument(
             for ts, last, turnover, volume in reversed(intraday)
         ],
         "cashflows": cashflows,
+        # НКД на сегодня и на дату расчётов: в срезе биржа даёт только второй
+        "accrual": accrual.accrual_profile(
+            session,
+            instrument,
+            exchange_value=quote.accrued_interest if quote else None,
+            settle_date=(quote.settle_date if quote else None),
+        ) if instrument.kind == "bond" else None,
     }
+
+
+@router.get("/instruments/{secid}/accrued", summary="НКД на дату")
+def get_accrued(
+    secid: str,
+    on_date: date | None = Query(None, description="Дата, по умолчанию сегодня"),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Накопленный купонный доход на выбранную дату.
+
+    Биржевой срез содержит НКД только на дату расчётов. Здесь он считается по
+    графику купонов на любой день — на начало торгов, на сегодня, на дату
+    будущей сделки.
+    """
+    secid = secid.upper()
+    rows = analytics.latest_rows(session, secids=(secid,))
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"Инструмент {secid} не найден")
+
+    instrument, quote = rows[0]
+    if instrument.kind != "bond":
+        raise HTTPException(
+            status_code=422, detail="НКД считается только по облигациям"
+        )
+
+    profile = accrual.accrual_profile(
+        session,
+        instrument,
+        exchange_value=quote.accrued_interest if quote else None,
+        settle_date=quote.settle_date if quote else None,
+        on_date=on_date,
+    )
+    if profile["today"] is None and profile["selected"] is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Не хватает данных о купонах: у выпуска нет ни графика, "
+                "ни величины купона в справочнике"
+            ),
+        )
+    return profile
+
+
+@router.get("/instruments/{secid}/intraday", summary="Ход торгов")
+async def get_intraday(
+    secid: str,
+    interval: int = Query(10, description="Шаг свечи в минутах: 1, 10 или 60"),
+    trades: int = Query(50, ge=1, le=500, description="Сколько сделок ленты вернуть"),
+    on_date: date | None = Query(None, description="Дата сессии, по умолчанию сегодня"),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Свечи, лента сделок и итоги текущей сессии.
+
+    Данные берутся с биржи в момент запроса: собранный срез обновляется по
+    расписанию и текущие торги показать не может.
+    """
+    try:
+        return await intraday.trading_session(
+            session, secid, interval=interval, trades_limit=trades, on_date=on_date
+        )
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
 
 
 @router.get("/curve", summary="Кривая бескупонной доходности")

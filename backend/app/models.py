@@ -130,8 +130,11 @@ class Quote(Base):
     duration_days: Mapped[int | None] = mapped_column(Integer)
     z_spread_bp: Mapped[float | None] = mapped_column(Float)
     g_spread_bp: Mapped[float | None] = mapped_column(Float)
-    # Накопленный купонный доход на одну облигацию, в валюте номинала
+    # Накопленный купонный доход на одну облигацию, в валюте номинала.
+    # Относится к дате расчётов settle_date, а не к дате среза: в режиме T+1
+    # это следующий торговый день. НКД на другие даты считает services/accrual.
     accrued_interest: Mapped[float | None] = mapped_column(Float)
+    settle_date: Mapped[date | None] = mapped_column(Date)
 
     trading_status: Mapped[str | None] = mapped_column(String(8))
     source: Mapped[str] = mapped_column(String(16), default="moex")

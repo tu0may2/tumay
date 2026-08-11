@@ -22,6 +22,7 @@ from .analytics import (
     latest_rows,
     yield_curve,
 )
+from .accrual import accrued_on
 from .treasury_extras import after_tax_yield
 
 #: Типы купона
@@ -210,6 +211,8 @@ def analyse(
     curve = yield_curve(session)
     rows_raw = latest_rows(session, kinds=("bond",))
 
+    today = date.today()
+
     # График выплат тянем одним запросом на все выпуски сразу
     isins = {inst.isin for inst, _ in rows_raw if inst.isin}
     actions_by_isin: dict[str, list[CorpAction]] = defaultdict(list)
@@ -218,6 +221,16 @@ def analyse(
             select(CorpAction).where(CorpAction.isin.in_(isins))
         ).scalars():
             actions_by_isin[action.isin].append(action)
+
+    # Для НКД нужны только купоны и обязательно по возрастанию даты: расчёт
+    # берёт границы периода из соседних записей
+    coupons_by_isin: dict[str, list[CorpAction]] = {
+        isin: sorted(
+            (a for a in actions if a.action_type == "coupon"),
+            key=lambda a: a.action_date,
+        )
+        for isin, actions in actions_by_isin.items()
+    }
 
     from .fx import FxBook, instrument_currency
 
@@ -252,6 +265,22 @@ def analyse(
         row["after_tax_yield_pct"] = after_tax_yield(
             row.get("yield_pct"), instrument.coupon_percent, price
         )
+
+        # НКД из среза относится к дате расчётов. На сегодня его считаем сами
+        row["settle_date"] = quote.settle_date if quote else None
+        accrued_today = accrued_on(
+            session, instrument, today,
+            coupons=coupons_by_isin.get(instrument.isin or "", []),
+            # У флоатеров ставка периода не раскрыта — тогда НКД
+            # восстанавливается из биржевого значения
+            exchange_value=quote.accrued_interest if quote else None,
+            settle_date=quote.settle_date if quote else None,
+        )
+        row["accrued_today"] = accrued_today["value"] if accrued_today else None
+        row["accrued_days_passed"] = (
+            accrued_today["days_passed"] if accrued_today else None
+        )
+        row["accrued_days_left"] = accrued_today["days_left"] if accrued_today else None
 
         rows.append(row)
 
@@ -323,7 +352,11 @@ ANALYSIS_COLUMNS: tuple[dict[str, Any], ...] = (
     {"code": "offer_date", "title": "Оферта", "kind": "date"},
     {"code": "last", "title": "Цена, %", "kind": "number", "digits": 4},
     {"code": "prev_wa_price", "title": "СВЦ пред. дня, %", "kind": "number", "digits": 4},
-    {"code": "accrued_interest", "title": "НКД", "kind": "number", "digits": 2},
+    {"code": "accrued_interest", "title": "НКД на расчёты", "kind": "number", "digits": 2},
+    {"code": "settle_date", "title": "Дата расчётов", "kind": "date"},
+    {"code": "accrued_today", "title": "НКД на сегодня", "kind": "number", "digits": 4},
+    {"code": "accrued_days_passed", "title": "Дней купона прошло", "kind": "number", "digits": 0},
+    {"code": "accrued_days_left", "title": "Дней до купона", "kind": "number", "digits": 0},
     {"code": "dirty_price", "title": "Полная цена, %", "kind": "number", "digits": 4},
     {"code": "settlement_amount", "title": "К оплате за бумагу", "kind": "number", "digits": 2},
     {"code": "yield_pct", "title": "Доходность, %", "kind": "number", "digits": 2},

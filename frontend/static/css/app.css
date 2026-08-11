@@ -592,3 +592,24 @@ tr.row--warn td { background: color-mix(in srgb, var(--warn) 10%, transparent); 
 
 /* Плитка денежной позиции */
 .money-note { font-size: 11px; color: var(--text-mute); margin-top: 3px; }
+
+/* ------------------------------------------------------------------ */
+/* Ход торгов и разбор НКД                                             */
+/* ------------------------------------------------------------------ */
+.stat__hint { font-size: 10.5px; color: var(--text-mute); margin-top: 2px; line-height: 1.35; }
+.stat-grid--tight { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 9px; }
+
+/* Заголовок раздела с переключателем справа */
+.section-title {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.section-subtitle {
+  font-size: 11px; color: var(--text-mute);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin: 14px 0 7px;
+}
+
+.segmented--sm button { padding: 3px 9px; font-size: 11px; }
+
+.accrual-picked { font-family: var(--mono); font-size: 12.5px; align-self: end; padding-bottom: 7px; }
+.card__note.warn { color: var(--warn); }

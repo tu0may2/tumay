@@ -26,6 +26,8 @@
     authEnabled: false,
     user: null,
     autoTimer: null,
+    intradayInterval: 10,
+    drawerSecid: null,
   };
 
   const THEME_KEY = 'treasury-theme';
@@ -598,7 +600,20 @@
         { title: 'Лет', className: 'num', render: (row) => fmt.num(row.years_to_maturity, 2) },
         { title: 'Цена, %', className: 'num', render: (row) => fmt.price(row.last) },
         { title: 'СВЦ вчера', className: 'num', render: (row) => fmt.price(row.prev_wa_price) },
-        { title: 'НКД', className: 'num', render: (row) => fmt.num(row.accrued_interest, 2) },
+        {
+          title: 'НКД расч.',
+          className: 'num',
+          render: (row) =>
+            `<span title="${row.settle_date ? 'на дату расчётов ' + fmt.date(row.settle_date) : 'на дату расчётов'}">${fmt.num(row.accrued_interest, 2)}</span>`,
+        },
+        {
+          title: 'НКД сегодня',
+          className: 'num',
+          render: (row) =>
+            fmt.isNum(row.accrued_today)
+              ? `<span title="прошло ${row.accrued_days_passed} дн., до купона ${row.accrued_days_left} дн.">${fmt.num(row.accrued_today, 2)}</span>`
+              : '<span class="dim">—</span>',
+        },
         { title: 'Полная цена', className: 'num', render: (row) => fmt.num(row.dirty_price, 2) },
         { title: 'Доходность', className: 'num', render: (row) => `<b>${fmt.pct(row.yield_pct)}</b>` },
         { title: 'Текущая', className: 'num', render: (row) => fmt.pct(row.current_yield_pct) },
@@ -2567,7 +2582,18 @@
           { label: 'Премия к КБД', value: fmt.bp(info.spread_to_curve_bp) },
           { label: 'Купон', value: fmt.pct(info.coupon_percent) },
           { label: 'Погашение', value: fmt.date(info.maturity_date) },
-          { label: 'НКД', value: fmt.num(info.accrued_interest, 2) }
+          {
+            label: 'НКД на расчёты',
+            value: fmt.num(info.accrued_interest, 2),
+            hint: data.accrual && data.accrual.settle_date
+              ? fmt.date(data.accrual.settle_date)
+              : 'дата расчётов',
+          },
+          {
+            label: 'НКД на сегодня',
+            value: accrualValue(data.accrual && data.accrual.today),
+            hint: accrualHint(data.accrual && data.accrual.today),
+          }
         );
       } else {
         stats.push(
@@ -2582,14 +2608,51 @@
             <div class="stat">
               <div class="stat__label">${stat.label}</div>
               <div class="stat__value">${stat.value}</div>
+              ${stat.hint ? `<div class="stat__hint">${fmt.esc(stat.hint)}</div>` : ''}
             </div>`).join('')}
         </div>
+
+        <div>
+          <div class="section-title">
+            Ход торгов
+            <span class="segmented segmented--sm" id="intraday-interval">
+              <button data-minutes="1" type="button">1 мин</button>
+              <button data-minutes="10" class="is-active" type="button">10 мин</button>
+              <button data-minutes="60" type="button">1 час</button>
+            </span>
+          </div>
+          <div id="intraday-stats"></div>
+          <div id="intraday-chart"></div>
+          <div class="section-subtitle">Лента сделок</div>
+          <div id="intraday-tape" class="table-wrap" style="max-height:260px"></div>
+        </div>
+
+        ${info.kind === 'bond' ? `
+        <div>
+          <div class="section-title">Накопленный купонный доход</div>
+          <div id="accrual-block"></div>
+        </div>` : ''}
+
         <div>
           <div class="section-title">Цена и объём торгов</div>
           <div id="drawer-chart"></div>
         </div>
         ${info.kind === 'bond' ? '<div><div class="section-title">Премия к рынку гособлигаций</div><div id="drawer-spread"></div></div>' : ''}
         ${data.cashflows.length ? '<div><div class="section-title">График выплат (данные НРД)</div><div id="drawer-cashflows" class="table-wrap"></div></div>' : ''}`;
+
+      state.drawerSecid = info.secid;
+      renderIntraday(info.secid, state.intradayInterval);
+      $$('#intraday-interval button').forEach((button) => {
+        button.addEventListener('click', () => {
+          state.intradayInterval = Number(button.dataset.minutes);
+          $$('#intraday-interval button').forEach((other) =>
+            other.classList.toggle('is-active', other === button)
+          );
+          renderIntraday(info.secid, state.intradayInterval);
+        });
+      });
+
+      if (info.kind === 'bond') renderAccrual(info.secid, data.accrual);
 
       charts.priceVolumeChart($('#drawer-chart'), data.history, {
         height: 260,
@@ -2611,6 +2674,188 @@
       }
     } catch (error) {
       failure(body, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Ход торгов
+  // ------------------------------------------------------------------
+  /** Ход торгов: свечи текущей сессии, итоги и лента сделок. */
+  async function renderIntraday(secid, interval) {
+    const chart = $('#intraday-chart');
+    const statsBox = $('#intraday-stats');
+    const tape = $('#intraday-tape');
+    if (!chart) return;
+    loading(chart);
+
+    let data;
+    try {
+      data = await api.intraday(secid, { interval, trades: 40 });
+    } catch (error) {
+      // Карточка могла закрыться, пока шёл запрос
+      if ($('#intraday-chart') !== chart) return;
+      return failure(chart, error);
+    }
+    // Пока грузились, пользователь мог открыть другую бумагу
+    if (state.drawerSecid !== secid) return;
+
+    const s = data.session;
+    const flow = data.flow || {};
+    statsBox.innerHTML = `
+      <div class="stat-grid stat-grid--tight">
+        ${[
+          { label: 'Открытие', value: fmt.price(s.open) },
+          { label: 'Последняя', value: `<b>${fmt.price(s.last)}</b>` },
+          {
+            label: 'От открытия',
+            value: `<span class="${fmt.trendClass(s.change_pct)}">${fmt.signedPct(s.change_pct)}</span>`,
+          },
+          { label: 'Максимум', value: fmt.price(s.high) },
+          { label: 'Минимум', value: fmt.price(s.low) },
+          { label: 'СВЦ сессии', value: fmt.price(s.wa_price) },
+          { label: 'Объём, шт', value: fmt.int(s.volume) },
+          { label: 'Оборот, ₽', value: fmt.money(s.turnover) },
+          {
+            label: 'Инициатива покупки',
+            value: fmt.isNum(flow.buy_share_pct) ? fmt.pct(flow.buy_share_pct, 1) : '—',
+            // Доля по деньгам и счёт сделок расходятся, когда объём прошёл
+            // одной заявкой, — показываем оба числа
+            hint: flow.trades
+              ? `${flow.buy_trades} покупок / ${flow.sell_trades} продаж из ${flow.trades}`
+              : '',
+          },
+        ].map((stat) => `
+          <div class="stat">
+            <div class="stat__label">${stat.label}</div>
+            <div class="stat__value">${stat.value}</div>
+            ${stat.hint ? `<div class="stat__hint">${fmt.esc(stat.hint)}</div>` : ''}
+          </div>`).join('')}
+      </div>
+      ${data.warning ? `<p class="card__note warn">${fmt.esc(data.warning)}</p>` : ''}
+      <p class="card__note">${fmt.esc(data.note)}${
+        data.snapshot && data.snapshot.ts
+          ? ` Собранный срез — на ${fmt.dateTime(data.snapshot.ts)}.`
+          : ''
+      }</p>`;
+
+    // Свечи рисуем как цену с объёмом: тот же вид, что у дневной истории,
+    // только шкала времени внутридневная
+    charts.priceVolumeChart(
+      chart,
+      data.candles.map((candle) => ({
+        trade_date: candle.begin,
+        close: candle.close,
+        volume: candle.volume,
+      })),
+      {
+        height: 240,
+        priceFormat: (value) => fmt.price(value),
+        xFormat: (value) => fmt.time(value),
+        xFormatFull: (value) => fmt.dateTime(value),
+        emptyMessage: 'Сегодня по этой бумаге сделок не было',
+      }
+    );
+
+    renderTable(tape, [
+      { title: 'Время', render: (row) => `<span class="dim">${fmt.esc(row.trade_time)}</span>` },
+      { title: 'Цена', className: 'num', render: (row) => fmt.price(row.price) },
+      { title: 'Кол-во', className: 'num', render: (row) => fmt.int(row.quantity) },
+      { title: 'Сумма, ₽', className: 'num', render: (row) => fmt.money(row.value) },
+      {
+        title: 'Доходность',
+        className: 'num',
+        render: (row) => (fmt.isNum(row.yield_pct) ? fmt.pct(row.yield_pct) : '<span class="dim">—</span>'),
+      },
+      {
+        title: 'Инициатор',
+        render: (row) =>
+          row.side === 'B'
+            ? '<span class="badge badge--up">покупатель</span>'
+            : row.side === 'S'
+              ? '<span class="badge badge--down">продавец</span>'
+              : '<span class="dim">—</span>',
+      },
+    ], data.trades, { emptyMessage: 'Лента пуста' });
+  }
+
+  /** Значение НКД с валютой — расчёт может быть в валюте номинала. */
+  function accrualValue(row) {
+    if (!row) return '<span class="dim">—</span>';
+    const base = fmt.num(row.value, row.value > 100 ? 2 : 4);
+    return row.currency && row.currency !== 'RUB'
+      ? `${base} <span class="dim">${fmt.esc(row.currency)}</span>`
+      : base;
+  }
+
+  function accrualHint(row) {
+    if (!row) return '';
+    return `${row.days_passed} из ${row.days_total} дней купона`;
+  }
+
+  /** Разбор НКД: на сегодня, на дату расчётов и на любую выбранную дату. */
+  function renderAccrual(secid, profile) {
+    const container = $('#accrual-block');
+    if (!container) return;
+
+    if (!profile || (!profile.today && !profile.settlement)) {
+      container.innerHTML =
+        '<div class="empty">Не хватает данных о купонах: у выпуска нет ни графика, ни величины купона в справочнике</div>';
+      return;
+    }
+
+    const row = profile.today || profile.settlement;
+    container.innerHTML = `
+      <div class="stat-grid stat-grid--tight">
+        <div class="stat">
+          <div class="stat__label">На сегодня</div>
+          <div class="stat__value">${accrualValue(profile.today)}</div>
+          <div class="stat__hint">${fmt.esc(accrualHint(profile.today))}</div>
+        </div>
+        <div class="stat">
+          <div class="stat__label">На дату расчётов</div>
+          <div class="stat__value">${accrualValue(profile.settlement)}</div>
+          <div class="stat__hint">${profile.settle_date ? fmt.date(profile.settle_date) : 'дата неизвестна'}</div>
+        </div>
+        <div class="stat">
+          <div class="stat__label">НКД биржи</div>
+          <div class="stat__value">${fmt.num(profile.exchange_value, 2)}</div>
+          <div class="stat__hint">в рублях расчётов</div>
+        </div>
+        <div class="stat">
+          <div class="stat__label">Купонный период</div>
+          <div class="stat__value">${fmt.date(row.period_start)} — ${fmt.date(row.period_end)}</div>
+          <div class="stat__hint">${row.days_left} ${fmt.plural(row.days_left, 'день', 'дня', 'дней')} до купона</div>
+        </div>
+      </div>
+
+      <div class="toolbar" style="border-bottom:none;padding-left:0">
+        <label class="field">
+          <span>НКД на дату</span>
+          <input type="date" id="accrual-date">
+        </label>
+        <div id="accrual-picked" class="accrual-picked"></div>
+      </div>
+
+      ${profile.mismatch ? `<p class="card__note warn">${fmt.esc(profile.mismatch.note)}</p>` : ''}
+      <p class="card__note">${fmt.esc(profile.exchange_note)} Расчёт по источнику: ${fmt.esc(row.source)}.</p>`;
+
+    const input = $('#accrual-date');
+    if (input) {
+      input.value = new Date().toISOString().slice(0, 10);
+      input.addEventListener('change', async () => {
+        const output = $('#accrual-picked');
+        if (!input.value) return;
+        output.textContent = 'Считаю…';
+        try {
+          const result = await api.accrued(secid, input.value);
+          const picked = result.selected || result.today;
+          output.innerHTML = picked
+            ? `<b>${accrualValue(picked)}</b> <span class="dim">· ${fmt.esc(accrualHint(picked))} · период ${fmt.date(picked.period_start)} — ${fmt.date(picked.period_end)}</span>`
+            : '<span class="dim">На эту дату график купонов не распространяется</span>';
+        } catch (error) {
+          output.innerHTML = `<span class="down">${fmt.esc(error.message)}</span>`;
+        }
+      });
     }
   }
 

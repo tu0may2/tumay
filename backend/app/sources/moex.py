@@ -12,7 +12,15 @@ from datetime import date, datetime
 from typing import Any
 
 from ..config import settings
-from .base import HttpSource, SourceError, rows_to_dicts, to_date, to_float, to_int
+from .base import (
+    HttpSource,
+    SourceError,
+    rows_to_dicts,
+    to_date,
+    to_datetime,
+    to_float,
+    to_int,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +47,18 @@ BOARD_SPECS: dict[str, dict[str, str]] = {
 _PAGE_SIZE = 100
 #: Предохранитель от бесконечного цикла пагинации
 _MAX_PAGES = 40
+
+#: Ленту сделок биржа отдаёт только страницами фиксированного размера и
+#: молча округляет запрос вниз: limit=50 вернёт 10 строк, а limit=5 — одну.
+#: Поэтому берём ближайший размер сверху и обрезаем ответ у себя.
+_TRADE_PAGE_SIZES = (1, 10, 100, 500, 1000)
+
+
+def _page_size_for(limit: int) -> int:
+    for size in _TRADE_PAGE_SIZES:
+        if size >= limit:
+            return size
+    return _TRADE_PAGE_SIZES[-1]
 
 
 class MoexSource(HttpSource):
@@ -162,6 +182,106 @@ class MoexSource(HttpSource):
             start += len(page)
 
         return sorted(bars, key=lambda bar: bar["trade_date"])
+
+    # ------------------------------------------------------------------
+    # Ход торгов: внутридневные свечи и лента сделок
+    # ------------------------------------------------------------------
+    async def fetch_candles(
+        self,
+        board: str,
+        secid: str,
+        *,
+        interval: int = 10,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> list[dict[str, Any]]:
+        """Внутридневные свечи: ход торгов внутри сессии.
+
+        ``interval`` в минутах — биржа принимает 1, 10 и 60; 24 и 7 означают
+        день и неделю. Данные отдаются за текущую сессию сразу, без задержки
+        на конец дня, поэтому это единственный способ увидеть, как идут торги.
+        """
+        spec = BOARD_SPECS.get(board)
+        if spec is None:
+            raise SourceError(f"moex: неизвестная площадка {board}")
+
+        start_date = start_date or date.today()
+        params: dict[str, Any] = {
+            "iss.meta": "off",
+            "iss.only": "candles",
+            "interval": interval,
+            "from": start_date.isoformat(),
+        }
+        if end_date:
+            params["till"] = end_date.isoformat()
+
+        payload = await self.get_json(
+            f"/engines/{spec['engine']}/markets/{spec['market']}"
+            f"/boards/{board}/securities/{secid}/candles.json",
+            **params,
+        )
+        candles: list[dict[str, Any]] = []
+        for row in rows_to_dicts(payload.get("candles")):
+            begin = to_datetime(row.get("begin"))
+            if begin is None:
+                continue
+            candles.append(
+                {
+                    "begin": begin,
+                    "end": to_datetime(row.get("end")),
+                    "open": to_float(row.get("open")),
+                    "close": to_float(row.get("close")),
+                    "high": to_float(row.get("high")),
+                    "low": to_float(row.get("low")),
+                    "volume": to_float(row.get("volume")),
+                    "value": to_float(row.get("value")),
+                }
+            )
+        candles.sort(key=lambda candle: candle["begin"])
+        return candles
+
+    async def fetch_trades(
+        self, board: str, secid: str, *, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Лента сделок текущей сессии, свежие сверху.
+
+        Для облигаций в ленте есть доходность каждой сделки — по ней видно,
+        по какой доходности реально уходил объём, а не только по срезу.
+        """
+        spec = BOARD_SPECS.get(board)
+        if spec is None:
+            raise SourceError(f"moex: неизвестная площадка {board}")
+
+        payload = await self.get_json(
+            f"/engines/{spec['engine']}/markets/{spec['market']}"
+            f"/boards/{board}/securities/{secid}/trades.json",
+            **{
+                "iss.meta": "off",
+                "iss.only": "trades",
+                "limit": _page_size_for(limit),
+                # Биржа отдаёт ленту с начала сессии; нам нужен её хвост
+                "reversed": 1,
+            },
+        )
+        trades: list[dict[str, Any]] = []
+        for row in rows_to_dicts(payload.get("trades")):
+            price = to_float(row.get("PRICE"))
+            if price is None:
+                continue
+            trades.append(
+                {
+                    "trade_no": row.get("TRADENO"),
+                    "trade_time": row.get("TRADETIME"),
+                    "trade_date": to_date(row.get("TRADEDATE")),
+                    "price": price,
+                    "quantity": to_float(row.get("QUANTITY")),
+                    "value": to_float(row.get("VALUE")),
+                    "yield_pct": to_float(row.get("YIELD")),
+                    # B — сделку инициировал покупатель, S — продавец
+                    "side": (row.get("BUYSELL") or "").upper() or None,
+                }
+            )
+        return trades[:limit]
 
     # ------------------------------------------------------------------
     # Кривая бескупонной доходности
@@ -333,8 +453,11 @@ def _map_quote(
         quote["duration_days"] = to_int(yd.get("DURATION")) or to_int(md.get("DURATION"))
         quote["z_spread_bp"] = to_float(yd.get("ZSPREADBP"))
         quote["g_spread_bp"] = to_float(yd.get("GSPREADBP"))
-        # НКД на одну бумагу: покупатель платит его сверх цены
+        # НКД на одну бумагу: покупатель платит его сверх цены. Биржа считает
+        # его на дату расчётов, поэтому дату сохраняем рядом — иначе непонятно,
+        # к какому дню относится число
         quote["accrued_interest"] = to_float(sec.get("ACCRUEDINT"))
+        quote["settle_date"] = to_date(sec.get("SETTLEDATE"))
 
     return quote
 
