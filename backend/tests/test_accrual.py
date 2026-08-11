@@ -243,6 +243,28 @@ def test_missing_coupon_data_is_not_reported_as_zero(session):
     assert accrual_service.accrued_on(session, bond, date.today()) is None
 
 
+def test_period_start_is_zero_even_without_known_coupon(session):
+    """В день начала периода накоплено ноль при любой ставке.
+
+    Величину купона знать для этого не нужно, поэтому выпуск с необъявленной
+    ставкой в этот день считается точно, а не остаётся без значения.
+    """
+    bond = add_bond(
+        session, coupon_value=0.0, coupon_period=30,
+        next_coupon_date=date(2026, 8, 12),
+    )
+    session.commit()
+
+    row = accrual_service.accrued_on(
+        session, bond, date(2026, 8, 12),
+        exchange_value=0.0, settle_date=date(2026, 8, 12),
+    )
+    assert row["value"] == 0.0
+    assert row["days_passed"] == 0
+    assert row["estimate"] is False
+    assert row["period_start"] == date(2026, 8, 12)
+
+
 def test_unknown_coupon_without_exchange_value_is_unknown(session):
     """Без биржевого НКД восстанавливать нечего — честнее вернуть пусто."""
     bond = add_bond(

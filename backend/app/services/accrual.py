@@ -179,6 +179,27 @@ def accrued_on(
     if days_passed < 0 or days_passed > days_total:
         return None
 
+    if days_passed == 0:
+        # Период только начался — накоплено ноль при любой ставке. Знать
+        # величину купона для этого не нужно, поэтому у выпусков с ещё не
+        # объявленной ставкой день начала считается точно.
+        return {
+            "date": on_date,
+            "value": 0.0,
+            "coupon_value": round(coupon_value, 4) if coupon_value else None,
+            "period_start": start,
+            "period_end": end,
+            "days_passed": 0,
+            "days_total": days_total,
+            "days_left": days_total,
+            "face_unit": instrument.face_unit,
+            "source": "начало купонного периода",
+            "value_basis": "face",
+            "floating": not coupon_value,
+            "estimate": False,
+            "note": "Купонный период начинается в этот день, накоплено ноль.",
+        }
+
     currency = "face"
     implied = _implied_coupon(exchange_value, settle_date, start, end, days_total)
 
