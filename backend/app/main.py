@@ -15,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from . import __version__
 from .api import api_router
 from .config import settings
-from .db import init_db
+from .db import init_db, session_scope
+from .services.auth import ensure_admin
 from .services.collector import collector
 from .services.scheduler import scheduler
 
@@ -31,6 +32,12 @@ async def lifespan(app: FastAPI):
     """Подготовить БД, при необходимости собрать данные и включить расписание."""
     init_db()
     logger.info("Хранилище готово: %s", settings.database_url)
+
+    if settings.auth_enabled:
+        # Пароль администратора печатается в журнал ровно один раз — при
+        # создании учётной записи; хранится только его хеш
+        with session_scope() as session:
+            ensure_admin(session)
 
     if settings.collect_on_startup:
         # В фоне: терминал должен открываться сразу, не дожидаясь биржи

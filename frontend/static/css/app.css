@@ -1,5 +1,10 @@
 /* Казначейский терминал — еловая палитра, тёмная и светлая темы */
 
+/* Любой собственный display перебивает браузерное правило для [hidden], и
+   скрытый блок продолжает занимать место, а всплывающее окно — перехватывать
+   клики по всей странице. Общее правило закрывает это раз и навсегда. */
+[hidden] { display: none !important; }
+
 /* Тёмная тема — по умолчанию: хвойная зелень по глубокому лесному фону */
 :root {
   --bg: #0b1310;
@@ -531,3 +536,59 @@ div.bond-pane[hidden] { display: none; }
 /* Колонка отметки в витринах */
 td.pick, th.pick { width: 34px; text-align: center; padding-left: 8px; padding-right: 4px; }
 .pick input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+
+/* ------------------------------------------------------------------ */
+/* Выбор портфеля, вход, деньги и импорт                               */
+/* ------------------------------------------------------------------ */
+.portfolio-pick { display: flex; align-items: center; gap: 7px; }
+.portfolio-pick > span {
+  font-size: 11px; color: var(--text-mute);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.portfolio-pick select {
+  padding: 6px 9px; background: var(--bg-sunken); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  font-size: 12px; font-family: inherit; max-width: 190px;
+}
+.portfolio-pick select:focus { border-color: var(--accent); outline: none; }
+
+.whoami {
+  font-size: 11px; color: var(--text-mute);
+  padding: 4px 9px; border: 1px solid var(--border-soft); border-radius: 999px;
+}
+.btn.is-active { background: var(--accent); color: var(--accent-contrast); border-color: var(--accent); }
+
+.modal__box--narrow { width: min(380px, calc(100vw - 32px)); }
+/* Форма входа перекрывает терминал целиком: до входа данных всё равно нет */
+.modal--login .modal__backdrop { background: rgba(4, 12, 8, 0.9); }
+.modal--login .modal__body { display: flex; flex-direction: column; gap: 12px; }
+.modal--login .modal__foot { justify-content: flex-end; }
+
+.field--check { flex-direction: row; align-items: center; gap: 8px; }
+.field--check input { width: 15px; height: 15px; accent-color: var(--accent); }
+.field--check span { text-transform: none; letter-spacing: 0; font-size: 12px; }
+
+.checks { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 6px; }
+.checks label { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.checks input { accent-color: var(--accent); }
+
+/* Загрузка файла перетаскиванием */
+.dropzone {
+  border: 1.5px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 22px 18px;
+  text-align: center;
+  background: var(--bg-sunken);
+  transition: border-color 0.15s, background 0.15s;
+}
+.dropzone p { margin: 0; font-size: 13px; }
+.dropzone p + p { margin-top: 6px; font-size: 12px; }
+.dropzone.is-over { border-color: var(--accent); background: var(--accent-soft); }
+
+/* Строки предпросмотра импорта и сверки */
+tr.row--bad td { background: color-mix(in srgb, var(--down) 11%, transparent); }
+tr.row--warn td { background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.problems { font-size: 11px; color: var(--down); }
+
+/* Плитка денежной позиции */
+.money-note { font-size: 11px; color: var(--text-mute); margin-top: 3px; }

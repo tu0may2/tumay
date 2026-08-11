@@ -18,6 +18,14 @@
     picked: { instruments: {}, analysis: {} },
     rows: { instruments: {}, analysis: {} },
     buyRows: [],
+    portfolios: [],
+    cashHorizon: 180,
+    historyDays: 365,
+    accounts: [],
+    importDeals: [],
+    authEnabled: false,
+    user: null,
+    autoTimer: null,
   };
 
   const THEME_KEY = 'treasury-theme';
@@ -594,6 +602,11 @@
         { title: 'Полная цена', className: 'num', render: (row) => fmt.num(row.dirty_price, 2) },
         { title: 'Доходность', className: 'num', render: (row) => `<b>${fmt.pct(row.yield_pct)}</b>` },
         { title: 'Текущая', className: 'num', render: (row) => fmt.pct(row.current_yield_pct) },
+        {
+          title: 'После налога',
+          className: 'num',
+          render: (row) => `<span class="dim">${fmt.pct(row.after_tax_yield_pct)}</span>`,
+        },
         { title: 'Премия', className: 'num', render: (row) => premiumCell(row.spread_to_curve_bp) },
         { title: 'Дюрация', className: 'num', render: (row) => (fmt.isNum(row.duration_years) ? fmt.num(row.duration_years, 2) + ' л' : '—') },
         { title: 'Купон', className: 'num', render: (row) => fmt.pct(row.coupon_percent) },
@@ -1185,8 +1198,61 @@
       renderCashflow();
       renderBenchmark();
       renderLimits();
+      renderHistory();
     } catch (error) {
       failure(kpi, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // История стоимости портфеля
+  // ------------------------------------------------------------------
+  async function renderHistory() {
+    const container = $('#history-chart');
+    if (!container) return;
+    loading(container);
+
+    try {
+      const data = await api.portfolioHistory(state.portfolioName, state.historyDays);
+      const note = $('#history-note');
+      if (note) note.textContent = data.note;
+
+      const summary = $('#history-summary');
+      if (summary) {
+        summary.innerHTML = data.snapshots
+          ? `${data.snapshots} ${fmt.plural(data.snapshots, 'снимок', 'снимка', 'снимков')} ` +
+            `с ${fmt.date(data.first_date)}` +
+            (fmt.isNum(data.total_return_pct)
+              ? ` · <span class="${fmt.trendClass(data.total_return_pct)}">${fmt.signedPct(data.total_return_pct)}</span>`
+              : '') +
+            (fmt.isNum(data.max_drawdown_pct) && data.max_drawdown_pct < 0
+              ? ` · просадка <span class="down">${fmt.pct(data.max_drawdown_pct)}</span>`
+              : '')
+          : '<span class="dim">снимков пока нет</span>';
+      }
+
+      charts.lineChart(
+        container,
+        [
+          {
+            name: 'Стоимость',
+            points: data.points.map((point) => ({
+              x: new Date(point.date).getTime(),
+              y: point.total_value,
+              label: `${fmt.date(point.date)}: ${fmt.rub(point.total_value)}`,
+            })),
+          },
+        ],
+        {
+          height: 220,
+          yFormat: (v) => fmt.money(v),
+          xFormat: (v) => fmt.dateShort(v),
+          emptyMessage:
+            'Снимки накапливаются со дня запуска. Нажмите «Зафиксировать стоимость», чтобы записать первую точку.',
+        }
+      );
+    } catch (error) {
+      failure(container, error);
     }
   }
 
@@ -1521,6 +1587,7 @@
       });
 
       renderWatchlist();
+      renderOffers();
 
       renderTable($('#calendar-table'), [
         { title: 'Дата', render: (row) => fmt.date(row.action_date) },
@@ -1545,6 +1612,869 @@
   }
 
   const ACTION_TITLES = { coupon: 'купон', amortization: 'амортизация', offer: 'оферта' };
+
+  /** Ближайшие оферты по своим бумагам. */
+  async function renderOffers() {
+    const container = $('#offers-table');
+    if (!container) return;
+    try {
+      const rows = await api.offers(state.portfolioName, 180);
+      renderTable(container, [
+        { title: 'Выпуск', render: (row) => secCell(row) },
+        { title: 'Дата оферты', render: (row) => fmt.date(row.offer_date) },
+        {
+          title: 'Осталось',
+          className: 'num',
+          render: (row) =>
+            `<span class="badge badge--${row.severity === 'critical' ? 'down' : 'warn'}">` +
+            `${row.days_left} ${fmt.plural(row.days_left, 'день', 'дня', 'дней')}</span>`,
+        },
+        { title: 'Количество', className: 'num', render: (row) => fmt.int(row.quantity) },
+        { title: 'Оценка', className: 'num', render: (row) => fmt.rub(row.market_value_rub) },
+        {
+          title: 'Приём заявок',
+          render: (row) =>
+            row.accept_from || row.accept_until
+              ? `<span class="dim">${row.accept_from ? fmt.date(row.accept_from) : '—'} — ${row.accept_until ? fmt.date(row.accept_until) : '—'}</span>`
+              : '<span class="dim">уточняйте у брокера</span>',
+        },
+        { title: 'Источник', render: (row) => `<span class="dim">${fmt.esc(row.source)}</span>` },
+      ], rows, {
+        rowKey: (row) => row.secid,
+        onRowClick: openInstrument,
+        emptyMessage: 'Оферт по вашим бумагам в ближайшие полгода нет',
+      });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Деньги
+  // ------------------------------------------------------------------
+  const PLACEMENT_TITLES = {
+    deposit: 'депозит', repo: 'РЕПО', reverse_repo: 'обратное РЕПО', loan: 'кредит',
+  };
+
+  //: Виды движений, которые заводят руками. Расчётные виды приходят из
+  //: календаря уже с готовым названием в kind_title.
+  const MANUAL_FLOW_TITLES = {
+    deposit: 'пополнение', withdrawal: 'вывод', fee: 'комиссия',
+    tax: 'налог', other: 'прочее',
+  };
+
+  async function renderCash() {
+    const kpi = $('#cash-kpi');
+    loading(kpi);
+
+    try {
+      const [position, calendar, accounts, placements, flows] = await Promise.all([
+        api.cashPosition(state.portfolioName),
+        api.cashCalendar(state.portfolioName, state.cashHorizon),
+        api.cashAccounts(state.portfolioName),
+        api.placements(state.portfolioName),
+        api.cashFlows({ limit: 40 }),
+      ]);
+
+      state.accounts = accounts;
+      fillAccountSelect(accounts);
+
+      const cards = [
+        {
+          label: 'Свободные деньги',
+          value: fmt.rub(position.total_cash_rub),
+          meta: `${accounts.length} ${fmt.plural(accounts.length, 'счёт', 'счёта', 'счетов')}`,
+        },
+        {
+          label: 'Размещено',
+          value: fmt.rub(position.placed_out_rub),
+          meta: fmt.isNum(position.weighted_placement_rate)
+            ? `средняя ставка ${fmt.pct(position.weighted_placement_rate)}`
+            : 'депозиты и обратное РЕПО',
+        },
+        {
+          label: 'Начислено процентов',
+          value: fmt.rub(position.accrued_interest_rub),
+          meta: 'с начала размещений, база 365 дней',
+        },
+        {
+          label: 'Привлечено',
+          value: fmt.rub(position.borrowed_rub),
+          meta: 'РЕПО и кредиты — вернуть придётся',
+        },
+        {
+          label: 'Итого ликвидность',
+          value: fmt.rub(position.total_liquidity_rub),
+          meta: 'деньги плюс размещения минус долг',
+        },
+        {
+          label: 'Минимальный остаток',
+          value: `<span class="${calendar.has_gap ? 'down' : ''}">${fmt.rub(calendar.lowest_balance)}</span>`,
+          meta: calendar.has_gap
+            ? `кассовый разрыв ${fmt.date(calendar.gap_date)}`
+            : `за ${state.cashHorizon} дней разрывов нет`,
+        },
+      ];
+
+      kpi.innerHTML = cards
+        .map((card) => `
+          <div class="kpi">
+            <div class="kpi__label">${card.label}</div>
+            <div class="kpi__value">${card.value}</div>
+            <div class="kpi__meta">${card.meta || ''}</div>
+          </div>`)
+        .join('');
+
+      const gapHint = $('#cash-gap-hint');
+      if (gapHint) {
+        gapHint.innerHTML = calendar.has_gap
+          ? `<span class="down">Разрыв ${fmt.date(calendar.gap_date)}</span>`
+          : `<span class="dim">Остаток на конец периода ${fmt.rub(calendar.closing_balance)}</span>`;
+      }
+
+      // Остаток нарастающим итогом: видно, где кривая уходит под ноль
+      charts.lineChart(
+        $('#cash-calendar-chart'),
+        [{
+          name: 'Остаток',
+          points: calendar.events.map((event) => ({
+            x: new Date(event.flow_date).getTime(),
+            y: event.balance_after,
+            label: `${fmt.date(event.flow_date)}: ${fmt.rub(event.balance_after)}`,
+          })),
+        }],
+        {
+          height: 200,
+          yFormat: (v) => fmt.money(v),
+          xFormat: (v) => fmt.dateShort(new Date(v)),
+          emptyMessage: 'Ожидаемых движений денег нет',
+        }
+      );
+
+      renderTable($('#cash-calendar-table'), [
+        { title: 'Дата', render: (row) => fmt.date(row.flow_date) },
+        {
+          title: 'Тип',
+          render: (row) => `<span class="badge">${fmt.esc(row.kind_title || row.kind)}</span>`,
+        },
+        { title: 'Основание', render: (row) => fmt.esc(row.comment || '—') },
+        {
+          title: 'Сумма',
+          className: 'num',
+          render: (row) => `<span class="${fmt.trendClass(row.amount)}">${fmt.rub(row.amount)}</span>`,
+        },
+        {
+          title: 'Остаток после',
+          className: 'num',
+          render: (row) =>
+            `<span class="${row.balance_after < 0 ? 'down' : ''}">${fmt.rub(row.balance_after)}</span>`,
+        },
+      ], calendar.events, { emptyMessage: 'Движений в этом горизонте нет' });
+
+      renderTable($('#accounts-table'), [
+        { title: 'Счёт', render: (row) => fmt.esc(row.name) },
+        { title: 'Банк', render: (row) => `<span class="dim">${fmt.esc(row.bank || '—')}</span>` },
+        { title: 'Валюта', render: (row) => fmt.esc(row.currency) },
+        { title: 'Остаток', className: 'num', render: (row) => fmt.num(row.balance, 2) },
+        { title: 'В рублях', className: 'num', render: (row) => fmt.rub(row.balance_rub) },
+        {
+          title: '',
+          className: 'num',
+          render: (row) => `<button class="btn btn--ghost" data-drop-account="${row.id}" title="Удалить счёт">×</button>`,
+        },
+      ], position.accounts, { emptyMessage: 'Счетов пока нет' });
+
+      bindRemoval('#accounts-table', 'dropAccount', api.deleteAccount, renderCash, 'Счёт удалён');
+
+      renderTable($('#flows-table'), [
+        { title: 'Дата', render: (row) => fmt.date(row.flow_date) },
+        {
+          title: 'Вид',
+          render: (row) =>
+            `<span class="badge">${fmt.esc(MANUAL_FLOW_TITLES[row.kind] || row.kind)}</span>` +
+            (row.is_planned ? ' <span class="badge badge--warn">план</span>' : ''),
+        },
+        {
+          title: 'Сумма',
+          className: 'num',
+          render: (row) => `<span class="${fmt.trendClass(row.amount)}">${fmt.num(row.amount, 2)}</span>`,
+        },
+        { title: 'Основание', render: (row) => `<span class="dim">${fmt.esc(row.comment || '—')}</span>` },
+        {
+          title: '',
+          className: 'num',
+          render: (row) => `<button class="btn btn--ghost" data-drop-flow="${row.id}" title="Удалить">×</button>`,
+        },
+      ], flows, { emptyMessage: 'Движений нет' });
+
+      bindRemoval('#flows-table', 'dropFlow', api.deleteFlow, renderCash, 'Движение удалено');
+
+      renderTable($('#placements-table'), [
+        {
+          title: 'Вид',
+          render: (row) => `<span class="badge">${PLACEMENT_TITLES[row.kind] || row.kind}</span>`,
+        },
+        { title: 'Контрагент', render: (row) => fmt.esc(row.counterparty || '—') },
+        {
+          title: 'Сумма',
+          className: 'num',
+          render: (row) => `${fmt.num(row.amount, 2)} ${fmt.esc(row.currency)}`,
+        },
+        { title: 'Ставка', className: 'num', render: (row) => fmt.pct(row.rate) },
+        { title: 'Начало', render: (row) => fmt.date(row.start_date) },
+        { title: 'Возврат', render: (row) => fmt.date(row.end_date) },
+        {
+          title: 'Осталось',
+          className: 'num',
+          render: (row) =>
+            fmt.isNum(row.days_left)
+              ? `${row.days_left} ${fmt.plural(row.days_left, 'день', 'дня', 'дней')}`
+              : '<span class="dim">—</span>',
+        },
+        { title: 'Начислено', className: 'num', render: (row) => fmt.num(row.accrued_interest, 2) },
+        { title: 'К возврату', className: 'num', render: (row) => fmt.num(row.total_at_maturity, 2) },
+        {
+          title: '',
+          className: 'num',
+          render: (row) => `<button class="btn btn--ghost" data-drop-placement="${row.id}" title="Удалить">×</button>`,
+        },
+      ], position.placements, { emptyMessage: 'Размещений нет' });
+
+      bindRemoval('#placements-table', 'dropPlacement', api.deletePlacement, renderCash, 'Размещение удалено');
+    } catch (error) {
+      failure(kpi, error);
+    }
+  }
+
+  /** Кнопки удаления в таблице: один обработчик на все строки. */
+  function bindRemoval(selector, datasetKey, remove, reload, message) {
+    const container = $(selector);
+    if (!container) return;
+    container.querySelectorAll(`[data-${datasetKey.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())}]`)
+      .forEach((button) => {
+        button.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          try {
+            await remove(button.dataset[datasetKey]);
+            toast(message);
+            reload();
+          } catch (error) {
+            toast(error.message, true);
+          }
+        });
+      });
+  }
+
+  function fillAccountSelect(accounts) {
+    const select = $('#fl-account');
+    if (!select) return;
+    const previous = select.value;
+    select.innerHTML = (accounts || [])
+      .map((account) => `<option value="${account.id}">${fmt.esc(account.name)} (${fmt.esc(account.currency)})</option>`)
+      .join('') || '<option value="">Сначала откройте счёт</option>';
+    if (previous) select.value = previous;
+  }
+
+  async function submitAccount(event) {
+    event.preventDefault();
+    const message = $('#account-msg');
+    try {
+      await api.createAccount({
+        name: $('#ac-name').value.trim(),
+        currency: $('#ac-currency').value,
+        bank: $('#ac-bank').value.trim() || null,
+        portfolio: $('#ac-portfolio').value.trim() || state.portfolioName || null,
+      });
+      message.textContent = 'Счёт открыт';
+      message.className = 'form-msg form-msg--ok';
+      $('#account-form').reset();
+      $('#account-form').hidden = true;
+      renderCash();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  async function submitFlow(event) {
+    event.preventDefault();
+    const message = $('#flow-msg');
+    const accountId = Number($('#fl-account').value);
+    if (!accountId) {
+      message.textContent = 'Сначала откройте счёт';
+      message.className = 'form-msg form-msg--err';
+      return;
+    }
+    try {
+      await api.createFlow({
+        account_id: accountId,
+        flow_date: $('#fl-date').value,
+        amount: Number($('#fl-amount').value),
+        kind: $('#fl-kind').value,
+        is_planned: $('#fl-planned').checked,
+        comment: $('#fl-comment').value.trim() || null,
+      });
+      message.textContent = 'Движение записано';
+      message.className = 'form-msg form-msg--ok';
+      $('#fl-amount').value = '';
+      $('#fl-comment').value = '';
+      renderCash();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  async function submitPlacement(event) {
+    event.preventDefault();
+    const message = $('#placement-msg');
+    try {
+      await api.createPlacement({
+        kind: $('#pl-kind').value,
+        counterparty: $('#pl-counterparty').value.trim() || null,
+        amount: Number($('#pl-amount').value),
+        currency: $('#pl-currency').value,
+        rate: Number($('#pl-rate').value),
+        start_date: $('#pl-start').value,
+        end_date: $('#pl-end').value,
+        collateral_secid: $('#pl-collateral').value.trim().toUpperCase() || null,
+        portfolio: state.portfolioName || null,
+      });
+      message.textContent = 'Размещение записано';
+      message.className = 'form-msg form-msg--ok';
+      $('#placement-form').reset();
+      $('#placement-form').hidden = true;
+      renderCash();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Импорт и сверка
+  // ------------------------------------------------------------------
+  async function renderImports() {
+    const container = $('#import-columns');
+    if (!container) return;
+    try {
+      const columns = await api.importColumns();
+      renderTable(container, [
+        { title: 'Поле', render: (row) => fmt.esc(row.title) },
+        {
+          title: 'Обязательное',
+          render: (row) =>
+            row.required
+              ? '<span class="badge badge--warn">да</span>'
+              : '<span class="dim">нет</span>',
+        },
+        {
+          title: 'Подойдут заголовки со словами',
+          render: (row) =>
+            row.hints.map((hint) => `<span class="badge">${fmt.esc(hint)}</span>`).join(' '),
+        },
+      ], columns, { emptyMessage: 'Нет данных' });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  /** Разбор выбранного файла со сделками. */
+  async function previewImportFile(file) {
+    if (!file) return;
+    const message = $('#import-msg');
+    const container = $('#import-preview');
+    $('#import-filename').textContent = file.name;
+    loading(container);
+    message.textContent = '';
+    $('#import-apply').disabled = true;
+
+    try {
+      const result = await api.importPreview(file, $('#import-portfolio').value.trim() || null);
+      state.importDeals = result.deals || [];
+
+      if (result.errors && result.errors.length) {
+        message.textContent = result.errors.join('; ');
+        message.className = 'form-msg form-msg--err';
+      } else {
+        message.innerHTML = `Разобрано ${result.total}, из них годных <b>${result.valid}</b>` +
+          (result.invalid ? `, с ошибками ${result.invalid}` : '');
+        message.className = 'form-msg' + (result.invalid ? '' : ' form-msg--ok');
+      }
+      $('#import-apply').disabled = !result.valid;
+
+      renderTable(container, [
+        { title: 'Стр.', className: 'num', render: (row) => `<span class="dim">${row.line}</span>` },
+        { title: 'Дата', render: (row) => fmt.date(row.trade_date) },
+        { title: 'Бумага', render: (row) => fmt.esc(row.secid || '—') },
+        {
+          title: 'Направление',
+          render: (row) =>
+            `<span class="badge badge--${row.side === 'buy' ? 'up' : 'down'}">${row.side === 'buy' ? 'покупка' : 'продажа'}</span>`,
+        },
+        { title: 'Кол-во', className: 'num', render: (row) => fmt.int(row.quantity) },
+        { title: 'Цена', className: 'num', render: (row) => fmt.num(row.price, 4) },
+        { title: 'НКД', className: 'num', render: (row) => fmt.num(row.accrued_interest, 2) },
+        { title: 'Комиссия', className: 'num', render: (row) => fmt.num(row.fee, 2) },
+        { title: 'Портфель', render: (row) => fmt.esc(row.portfolio) },
+        {
+          title: 'Замечания',
+          render: (row) =>
+            row.problems.length
+              ? `<span class="problems">${fmt.esc(row.problems.join('; '))}</span>`
+              : '<span class="up">—</span>',
+        },
+      ], state.importDeals, { emptyMessage: 'Строк не найдено' });
+
+      // Строки с замечаниями подсвечиваем: их не запишут
+      container.querySelectorAll('tbody tr').forEach((tr, index) => {
+        if (state.importDeals[index] && !state.importDeals[index].ok) tr.classList.add('row--bad');
+      });
+    } catch (error) {
+      failure(container, error);
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  async function applyImport() {
+    const good = (state.importDeals || []).filter((deal) => deal.ok);
+    if (!good.length) return;
+
+    const button = $('#import-apply');
+    button.disabled = true;
+    try {
+      const result = await api.importApply(good);
+      toast(`Загружено сделок: ${result.created}` +
+        (result.skipped_count ? `, пропущено ${result.skipped_count}` : ''));
+      state.importDeals = [];
+      $('#import-preview').innerHTML = '<div class="empty">Сделки загружены в журнал</div>';
+      // Портфель пересчитан — его вкладку нужно перерисовать заново
+      state.loaded.portfolio = false;
+      state.loaded.cash = false;
+      await loadPortfolioNames();
+    } catch (error) {
+      toast(error.message, true);
+      button.disabled = false;
+    }
+  }
+
+  async function runReconcile(file) {
+    if (!file) return;
+    const container = $('#recon-result');
+    const message = $('#recon-msg');
+    $('#recon-filename').textContent = file.name;
+    loading(container);
+
+    try {
+      const result = await api.reconcile(file, state.portfolioName);
+      if (result.errors && result.errors.length) {
+        message.textContent = result.errors.join('; ');
+        message.className = 'form-msg form-msg--err';
+      } else {
+        message.textContent = `Совпало ${result.matched_count}, расхождений ${result.difference_count}`;
+        message.className = 'form-msg' + (result.difference_count ? ' form-msg--err' : ' form-msg--ok');
+      }
+
+      const rows = [...result.differences, ...result.matched];
+      renderTable(container, [
+        { title: 'Бумага', render: (row) => secCell(row) },
+        { title: 'В терминале', className: 'num', render: (row) => fmt.int(row.terminal_quantity) },
+        { title: 'В выписке', className: 'num', render: (row) => fmt.int(row.statement_quantity) },
+        {
+          title: 'Разница',
+          className: 'num',
+          render: (row) =>
+            `<span class="${fmt.trendClass(row.difference)}">${row.difference > 0 ? '+' : ''}${fmt.int(row.difference)}</span>`,
+        },
+        {
+          title: 'Статус',
+          render: (row) =>
+            row.status === 'совпадает'
+              ? '<span class="badge badge--up">совпадает</span>'
+              : `<span class="badge badge--down">${fmt.esc(row.status)}</span>`,
+        },
+      ], rows, { emptyMessage: 'Сравнивать нечего' });
+
+      container.querySelectorAll('tbody tr').forEach((tr, index) => {
+        if (rows[index] && rows[index].status !== 'совпадает') tr.classList.add('row--bad');
+      });
+    } catch (error) {
+      failure(container, error);
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  /** Перетаскивание файла в область загрузки. */
+  function wireDropzone(zoneSelector, inputSelector, pickSelector, handler) {
+    const zone = $(zoneSelector);
+    const input = $(inputSelector);
+    if (!zone || !input) return;
+
+    on(pickSelector, 'click', () => input.click());
+    input.addEventListener('change', () => handler(input.files[0]));
+
+    ['dragenter', 'dragover'].forEach((name) =>
+      zone.addEventListener(name, (event) => {
+        event.preventDefault();
+        zone.classList.add('is-over');
+      })
+    );
+    ['dragleave', 'drop'].forEach((name) =>
+      zone.addEventListener(name, () => zone.classList.remove('is-over'))
+    );
+    zone.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const file = event.dataTransfer && event.dataTransfer.files[0];
+      if (file) handler(file);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Настройки: доступ, уведомления, налоги, журнал
+  // ------------------------------------------------------------------
+  const ROLE_TITLES = { viewer: 'Просмотр', trader: 'Сделки и лимиты', admin: 'Администратор' };
+
+  async function renderAdmin() {
+    const info = $('#auth-info');
+    loading(info);
+
+    try {
+      const [mode, taxes, events] = await Promise.all([
+        api.authMode(), api.taxes(), api.events(state.portfolioName),
+      ]);
+
+      $('#auth-state').innerHTML = mode.auth_enabled
+        ? '<span class="badge badge--up">вход включён</span>'
+        : '<span class="badge badge--warn">вход выключен</span>';
+
+      info.innerHTML = `<p class="card__note">${fmt.esc(mode.note)}</p>`;
+
+      $('#taxes-info').innerHTML = `
+        <div class="kpi-grid">
+          <div class="kpi">
+            <div class="kpi__label">Налог на прибыль</div>
+            <div class="kpi__value">${fmt.pct(taxes.profit_tax_pct)}</div>
+            <div class="kpi__meta">на прирост стоимости</div>
+          </div>
+          <div class="kpi">
+            <div class="kpi__label">Налог на купон</div>
+            <div class="kpi__value">${fmt.pct(taxes.coupon_tax_pct)}</div>
+            <div class="kpi__meta">на купонный доход</div>
+          </div>
+        </div>
+        <p class="card__note">${fmt.esc(taxes.note)}</p>`;
+
+      $('#events-list').innerHTML = events.length
+        ? events
+            .map((event) => `
+              <div class="alert">
+                <span class="alert__dot alert__dot--${event.severity}"></span>
+                <div>
+                  <div class="alert__title">${fmt.esc(event.title)}</div>
+                  <div class="alert__detail">${fmt.esc(event.detail)}</div>
+                </div>
+              </div>`)
+            .join('')
+        : '<div class="empty">Событий нет — рассылать нечего</div>';
+
+      // Пользователи, правила и журнал доступны только администратору:
+      // при роли ниже сервер ответит 403, и это не ошибка интерфейса
+      await Promise.all([renderUsers(), renderRules(), renderAudit()]);
+    } catch (error) {
+      failure(info, error);
+    }
+  }
+
+  function denied(container, error) {
+    if (!container) return;
+    const forbidden = /Недостаточно прав|вход в систему/i.test(error.message || '');
+    container.innerHTML = `<div class="empty">${
+      forbidden ? fmt.esc(error.message) : 'Не удалось загрузить: ' + fmt.esc(error.message)
+    }</div>`;
+  }
+
+  async function renderUsers() {
+    const container = $('#users-table');
+    try {
+      const users = await api.users();
+      $('#user-form').hidden = false;
+      renderTable(container, [
+        { title: 'Логин', render: (row) => fmt.esc(row.login) },
+        { title: 'Имя', render: (row) => `<span class="dim">${fmt.esc(row.full_name || '—')}</span>` },
+        { title: 'Роль', render: (row) => `<span class="badge">${ROLE_TITLES[row.role] || row.role}</span>` },
+        {
+          title: 'Статус',
+          render: (row) =>
+            row.active
+              ? '<span class="badge badge--up">работает</span>'
+              : '<span class="badge badge--down">отключён</span>',
+        },
+        {
+          title: '',
+          className: 'num',
+          render: (row) => `<button class="btn btn--ghost" data-drop-user="${row.id}" title="Отключить доступ">×</button>`,
+        },
+      ], users, { emptyMessage: 'Пользователей нет' });
+      bindRemoval('#users-table', 'dropUser', api.disableUser, renderUsers, 'Доступ отключён');
+    } catch (error) {
+      $('#user-form').hidden = true;
+      denied(container, error);
+    }
+  }
+
+  async function renderRules() {
+    const container = $('#rules-table');
+    try {
+      const rules = await api.notificationRules();
+      renderTable(container, [
+        { title: 'Название', render: (row) => fmt.esc(row.name) },
+        {
+          title: 'Куда',
+          render: (row) => `<span class="dim" style="font-size:11px">${fmt.esc(row.webhook_url)}</span>`,
+        },
+        {
+          title: 'События',
+          render: (row) =>
+            (row.events || '').split(',').filter(Boolean)
+              .map((code) => `<span class="badge">${EVENT_TITLES[code] || code}</span>`).join(' '),
+        },
+        {
+          title: '',
+          className: 'num',
+          render: (row) => `<button class="btn btn--ghost" data-drop-rule="${row.id}" title="Удалить">×</button>`,
+        },
+      ], rules, { emptyMessage: 'Правил нет — уведомления никуда не уходят' });
+      bindRemoval('#rules-table', 'dropRule', api.deleteRule, renderRules, 'Правило удалено');
+    } catch (error) {
+      denied(container, error);
+    }
+  }
+
+  const EVENT_TITLES = {
+    limit_breach: 'нарушение лимита',
+    offer_soon: 'скоро оферта',
+    cash_gap: 'кассовый разрыв',
+    price_move: 'движение цены',
+    volume_anomaly: 'аномалия объёма',
+  };
+
+  async function renderAudit() {
+    const container = $('#audit-table');
+    try {
+      const records = await api.audit({ limit: 200 });
+      renderTable(container, [
+        { title: 'Когда', render: (row) => fmt.dateTime(row.created_at) },
+        { title: 'Кто', render: (row) => fmt.esc(row.user_login || '—') },
+        { title: 'Действие', render: (row) => `<span class="badge">${fmt.esc(row.action)}</span>` },
+        { title: 'Объект', render: (row) => `<span class="dim">${fmt.esc(row.entity)}${row.entity_id ? ' #' + fmt.esc(row.entity_id) : ''}</span>` },
+        { title: 'Подробности', render: (row) => fmt.esc(row.detail || '—') },
+      ], records, { emptyMessage: 'Журнал пуст' });
+    } catch (error) {
+      denied(container, error);
+    }
+  }
+
+  async function submitUser(event) {
+    event.preventDefault();
+    const message = $('#user-msg');
+    try {
+      await api.createUser({
+        login: $('#u-login').value.trim(),
+        password: $('#u-password').value,
+        full_name: $('#u-name').value.trim() || null,
+        role: $('#u-role').value,
+      });
+      message.textContent = 'Пользователь заведён';
+      message.className = 'form-msg form-msg--ok';
+      $('#user-form').reset();
+      renderUsers();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  async function submitRule(event) {
+    event.preventDefault();
+    const message = $('#rule-msg');
+    const events = $$('#r-events input:checked').map((box) => box.value);
+    if (!events.length) {
+      message.textContent = 'Выберите хотя бы одно событие';
+      message.className = 'form-msg form-msg--err';
+      return;
+    }
+    try {
+      await api.createRule({
+        name: $('#r-name').value.trim(),
+        webhook_url: $('#r-url').value.trim(),
+        events,
+      });
+      message.textContent = 'Правило сохранено';
+      message.className = 'form-msg form-msg--ok';
+      $('#rule-form').reset();
+      $('#rule-form').hidden = true;
+      renderRules();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  /** Проверка рассылки без отправки: показывает, что ушло бы адресатам. */
+  async function testNotifications() {
+    try {
+      const result = await api.sendNotifications(state.portfolioName, true);
+      toast(
+        result.events_found
+          ? `Событий ${result.events_found}, подошло под правила ${result.sent} (без отправки)`
+          : 'Событий нет — рассылать нечего'
+      );
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Вход
+  // ------------------------------------------------------------------
+  function showLogin(show) {
+    const modal = $('#login-modal');
+    if (modal) modal.hidden = !show;
+    if (show) setTimeout(() => { const node = $('#li-login'); if (node) node.focus(); }, 60);
+  }
+
+  async function submitLogin(event) {
+    event.preventDefault();
+    const message = $('#login-msg');
+    try {
+      const result = await api.login($('#li-login').value.trim(), $('#li-password').value);
+      api.token(result.token);
+      state.user = result;
+      showLogin(false);
+      $('#li-password').value = '';
+      message.textContent = '';
+      updateWhoami();
+      // Данные грузились без токена и не пришли — начинаем заново
+      state.loaded = {};
+      await loadPortfolioNames();
+      RENDERERS[state.view]();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  async function doLogout() {
+    try {
+      await api.logout();
+    } catch (error) { /* сессия могла истечь — всё равно выходим */ }
+    api.token(null);
+    state.user = null;
+    updateWhoami();
+    showLogin(true);
+  }
+
+  function updateWhoami() {
+    const badge = $('#whoami');
+    const logout = $('#btn-logout');
+    const enabled = state.authEnabled && state.user;
+    if (badge) {
+      badge.hidden = !enabled;
+      if (enabled) {
+        badge.textContent = `${state.user.full_name || state.user.login} · ${ROLE_TITLES[state.user.role] || state.user.role}`;
+      }
+    }
+    if (logout) logout.hidden = !enabled;
+  }
+
+  /** Узнать режим доступа и, если нужно, попросить войти. */
+  async function initAuth() {
+    let mode;
+    try {
+      mode = await api.authMode();
+    } catch (error) {
+      // Терминал без входа — обычный режим работы на своей машине
+      state.authEnabled = false;
+      return true;
+    }
+    state.authEnabled = mode.auth_enabled;
+    if (!mode.auth_enabled) return true;
+
+    if (!api.token()) {
+      showLogin(true);
+      return false;
+    }
+    try {
+      state.user = await api.me();
+      updateWhoami();
+      return true;
+    } catch (error) {
+      api.token(null);
+      showLogin(true);
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Выбор портфеля и автообновление
+  // ------------------------------------------------------------------
+  async function loadPortfolioNames() {
+    const select = $('#portfolio-select');
+    if (!select) return;
+    try {
+      const names = await api.portfolioNames();
+      state.portfolios = names;
+      select.innerHTML =
+        '<option value="">Все сразу</option>' +
+        names.map((name) => `<option value="${fmt.esc(name)}">${fmt.esc(name)}</option>`).join('');
+      // Выбранный портфель мог исчезнуть вместе с последней сделкой
+      select.value = names.includes(state.portfolioName) ? state.portfolioName : '';
+      state.portfolioName = select.value || null;
+    } catch (error) {
+      console.warn('Список портфелей не загружен:', error.message);
+    }
+  }
+
+  function changePortfolio(name) {
+    state.portfolioName = name || null;
+    // Портфель влияет на деньги, историю, сигналы и лимиты — сбрасываем всё,
+    // текущую вкладку перерисовываем сразу
+    state.loaded = {};
+    state.loaded[state.view] = true;
+    const field = $('#d-portfolio');
+    if (field && name) field.value = name;
+    RENDERERS[state.view]();
+  }
+
+  const AUTO_REFRESH_MS = 60000;
+
+  function toggleAutoRefresh() {
+    const button = $('#btn-auto');
+    if (state.autoTimer) {
+      clearInterval(state.autoTimer);
+      state.autoTimer = null;
+      if (button) {
+        button.classList.remove('is-active');
+        button.title = 'Автообновление раз в минуту';
+      }
+      toast('Автообновление выключено');
+      return;
+    }
+    state.autoTimer = setInterval(() => {
+      // Перерисовываем только открытую вкладку: остальные обновятся при показе
+      if (document.hidden) return;
+      state.loaded = {};
+      state.loaded[state.view] = true;
+      RENDERERS[state.view]();
+    }, AUTO_REFRESH_MS);
+    if (button) {
+      button.classList.add('is-active');
+      button.title = 'Выключить автообновление';
+    }
+    toast('Автообновление включено: раз в минуту');
+  }
 
   // ------------------------------------------------------------------
   // Источники
@@ -1766,7 +2696,10 @@
     instruments: renderInstruments,
     bonds: renderBondsTab,
     portfolio: renderPortfolio,
+    cash: renderCash,
+    imports: renderImports,
     signals: renderSignals,
+    admin: renderAdmin,
     sources: renderSources,
   };
 
@@ -1827,7 +2760,9 @@
     const today = new Date();
     const isoToday = today.toISOString().slice(0, 10);
     const monthAgo = new Date(today.getTime() - 30 * 86400000).toISOString().slice(0, 10);
-    [['#d-date', isoToday], ['#e-from', monthAgo], ['#e-to', isoToday]].forEach(
+    const inMonth = new Date(today.getTime() + 30 * 86400000).toISOString().slice(0, 10);
+    [['#d-date', isoToday], ['#e-from', monthAgo], ['#e-to', isoToday],
+     ['#fl-date', isoToday], ['#pl-start', isoToday], ['#pl-end', inMonth]].forEach(
       ([selector, value]) => { const node = $(selector); if (node) node.value = value; }
     );
 
@@ -1842,7 +2777,88 @@
 
     on('#btn-refresh', 'click', refresh);
     on('#btn-collect', 'click', collect);
+    on('#btn-auto', 'click', toggleAutoRefresh);
     on('#deal-form', 'submit', submitDeal);
+
+    // Выбор портфеля действует на все вкладки сразу
+    on('#portfolio-select', 'change', (event) => changePortfolio(event.target.value));
+
+    // Вход и выход
+    on('#login-form', 'submit', submitLogin);
+    on('#btn-logout', 'click', doLogout);
+
+    // История стоимости и отчёт
+    $$('#history-range button').forEach((button) => {
+      button.addEventListener('click', () => {
+        state.historyDays = Number(button.dataset.days);
+        $$('#history-range button').forEach((other) =>
+          other.classList.toggle('is-active', other === button)
+        );
+        renderHistory();
+      });
+    });
+    on('#snapshot-now', 'click', async () => {
+      try {
+        await api.takeSnapshot(state.portfolioName);
+        toast('Стоимость зафиксирована');
+        renderHistory();
+      } catch (error) {
+        toast(error.message, true);
+      }
+    });
+    on('#report-download', 'click', async () => {
+      const button = $('#report-download');
+      button.disabled = true;
+      try {
+        const filename = await api.download('/api/report', {
+          params: { name: state.portfolioName },
+        });
+        toast(`Отчёт сохранён: ${filename}`);
+      } catch (error) {
+        toast(error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    // Деньги
+    $$('#cash-horizon button').forEach((button) => {
+      button.addEventListener('click', () => {
+        state.cashHorizon = Number(button.dataset.days);
+        $$('#cash-horizon button').forEach((other) =>
+          other.classList.toggle('is-active', other === button)
+        );
+        renderCash();
+      });
+    });
+    on('#account-add', 'click', () => {
+      const form = $('#account-form');
+      form.hidden = !form.hidden;
+    });
+    on('#account-cancel', 'click', () => { $('#account-form').hidden = true; });
+    on('#account-form', 'submit', submitAccount);
+    on('#flow-form', 'submit', submitFlow);
+    on('#placement-add', 'click', () => {
+      const form = $('#placement-form');
+      form.hidden = !form.hidden;
+    });
+    on('#placement-cancel', 'click', () => { $('#placement-form').hidden = true; });
+    on('#placement-form', 'submit', submitPlacement);
+
+    // Импорт и сверка
+    wireDropzone('#import-drop', '#import-file', '#import-pick', previewImportFile);
+    wireDropzone('#recon-drop', '#recon-file', '#recon-pick', runReconcile);
+    on('#import-apply', 'click', applyImport);
+
+    // Настройки
+    on('#user-form', 'submit', submitUser);
+    on('#rule-add', 'click', () => {
+      const form = $('#rule-form');
+      form.hidden = !form.hidden;
+    });
+    on('#rule-cancel', 'click', () => { $('#rule-form').hidden = true; });
+    on('#rule-form', 'submit', submitRule);
+    on('#notify-test', 'click', testNotifications);
 
     // Анализ облигаций
     const onAnalysisFilter = debounce(renderAnalysis);
@@ -1930,12 +2946,27 @@
     $$('[data-close]').forEach((node) => node.addEventListener('click', closeDrawer));
     document.addEventListener('keydown', (event) => {
       if (event.key !== 'Escape') return;
+      // Форма входа закрытию не подлежит: без неё терминал бесполезен
+      if (!$('#login-modal').hidden) return;
       // Окно добавления перекрывает карточку, поэтому закрываем его первым
       if (!$('#buy-modal').hidden) closeBuyModal();
       else closeDrawer();
     });
 
+    // Истёкшая сессия: клиент API просит показать вход заново
+    window.onAuthRequired = () => {
+      state.user = null;
+      updateWhoami();
+      showLogin(true);
+    };
+
     switchView('overview');
+
+    // Проверка доступа и список портфелей — после первой отрисовки, чтобы
+    // интерфейс появлялся сразу, а не ждал ответа сервера
+    initAuth().then((allowed) => {
+      if (allowed) loadPortfolioNames();
+    });
   }
 
   document.addEventListener('DOMContentLoaded', () => {

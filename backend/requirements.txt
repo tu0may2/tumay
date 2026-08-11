@@ -6,6 +6,8 @@ pydantic>=2.6
 pydantic-settings>=2.1
 # Выгрузка таблиц в Excel (.xlsx)
 openpyxl>=3.1
+# Загрузка файлов (импорт сделок из брокерского отчёта)
+python-multipart>=0.0.9
 
 # Тесты
 pytest>=8.0

@@ -54,6 +54,23 @@ class Settings(BaseSettings):
 
     # Метод учёта себестоимости: fifo (нужен для налогового учёта) или average
     cost_method: str = "fifo"
+
+    # Доступ. По умолчанию выключен: терминал на одной машине не должен
+    # требовать логина. На общем сервере включается одной переменной.
+    auth_enabled: bool = False
+    admin_login: str = "admin"
+    #: Если не задан, при первом запуске генерируется и печатается в журнал
+    admin_password: str = ""
+    session_hours: int = 12
+
+    # Налоги для расчёта доходности после налогообложения, %
+    profit_tax_pct: float = 25.0
+    coupon_tax_pct: float = 25.0
+
+    # Ежедневный снимок стоимости портфеля
+    snapshots_enabled: bool = True
+    # Периодичность снимков и рассылки уведомлений, сек
+    housekeeping_interval_sec: int = 3600
     # Индексы-ориентиры для сравнения портфеля
     benchmark_bond_index: str = "RGBITR"
     benchmark_corp_index: str = "RUCBITR"

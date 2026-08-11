@@ -38,6 +38,36 @@ class Scheduler:
         await collector.collect_history()
         await collector.collect_corp_actions()
 
+    async def _housekeeping(self) -> None:
+        """Снимок стоимости за сегодня и рассылка событий.
+
+        Снимок перезаписывает запись за текущую дату, поэтому цикл может
+        отрабатывать сколько угодно раз за день: в истории останется одна
+        точка на дату — последняя известная оценка.
+        """
+        # Работа с БД синхронная: уносим её из цикла событий
+        await asyncio.to_thread(self._housekeeping_sync)
+
+    def _housekeeping_sync(self) -> None:
+        from ..db import session_scope
+        from .history import take_snapshot
+        from .portfolio import portfolio_names
+        from .treasury_extras import notify
+
+        with session_scope() as session:
+            if settings.snapshots_enabled:
+                # Снимок по каждому портфелю и общий по всем сразу
+                for name in [None, *portfolio_names(session)]:
+                    take_snapshot(session, portfolio=name)
+
+            result = notify(session)
+            if result["sent"]:
+                logger.info(
+                    "Уведомления: отправлено %s событий, ошибок %s",
+                    result["sent"],
+                    result["failed"],
+                )
+
     def start(self) -> None:
         if self._tasks:
             return
@@ -53,11 +83,19 @@ class Scheduler:
                 ),
                 name="treasury-reference",
             ),
+            asyncio.create_task(
+                self._loop(
+                    "housekeeping", settings.housekeeping_interval_sec, self._housekeeping
+                ),
+                name="treasury-housekeeping",
+            ),
         ]
         logger.info(
-            "Планировщик запущен: котировки раз в %s с, справочники раз в %s с",
+            "Планировщик запущен: котировки раз в %s с, справочники раз в %s с, "
+            "снимки и уведомления раз в %s с",
             settings.quotes_interval_sec,
             settings.reference_interval_sec,
+            settings.housekeeping_interval_sec,
         )
 
     async def stop(self) -> None:

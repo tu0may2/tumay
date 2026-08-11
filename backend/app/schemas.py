@@ -146,3 +146,150 @@ class DealBulkResult(BaseModel):
     errors: list[dict]
     created_count: int
     error_count: int
+
+
+# ----------------------------------------------------------------------
+# Деньги
+# ----------------------------------------------------------------------
+class CashAccountCreate(BaseModel):
+    """Счёт казначейства."""
+
+    name: str = Field(..., min_length=1, max_length=128)
+    currency: str = Field("RUB", min_length=3, max_length=8)
+    portfolio: str = Field("Основной", min_length=1, max_length=64)
+    bank: str | None = Field(None, max_length=128)
+    comment: str | None = None
+
+    @field_validator("currency")
+    @classmethod
+    def _upper(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class CashAccountRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    currency: str
+    portfolio: str
+    bank: str | None
+
+
+class CashFlowCreate(BaseModel):
+    """Движение по счёту. Отрицательная сумма — списание."""
+
+    account_id: int
+    amount: float = Field(..., description="Положительная — приход, отрицательная — расход")
+    flow_date: date = Field(default_factory=date.today)
+    kind: Literal[
+        "deposit", "withdrawal", "trade", "coupon", "fee", "tax", "transfer", "other"
+    ] = "other"
+    is_planned: bool = False
+    comment: str | None = None
+
+
+class CashFlowRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    account_id: int
+    flow_date: date
+    amount: float
+    kind: str
+    is_planned: bool
+    comment: str | None
+
+
+class PlacementCreate(BaseModel):
+    """Депозит, РЕПО или кредит."""
+
+    kind: Literal["deposit", "repo", "reverse_repo", "loan"]
+    amount: float = Field(..., gt=0)
+    rate: float = Field(..., ge=0, description="Ставка годовых, %")
+    start_date: date
+    end_date: date
+    currency: str = Field("RUB", min_length=3, max_length=8)
+    portfolio: str = Field("Основной", min_length=1, max_length=64)
+    account_id: int | None = None
+    counterparty: str | None = Field(None, max_length=128)
+    collateral_secid: str | None = Field(None, max_length=64)
+    comment: str | None = None
+
+    @field_validator("currency")
+    @classmethod
+    def _upper_ccy(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("end_date")
+    @classmethod
+    def _after_start(cls, value: date, info) -> date:
+        start = info.data.get("start_date")
+        if start and value <= start:
+            raise ValueError("Дата окончания должна быть позже даты начала")
+        return value
+
+
+class PlacementRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    kind: str
+    amount: float
+    rate: float
+    currency: str
+    start_date: date
+    end_date: date
+    counterparty: str | None
+    closed: bool
+
+
+# ----------------------------------------------------------------------
+# Импорт, доступ, уведомления
+# ----------------------------------------------------------------------
+class ImportApply(BaseModel):
+    """Подтверждение импорта разобранных сделок."""
+
+    deals: list[dict] = Field(..., min_length=1, max_length=5000)
+
+
+class LoginRequest(BaseModel):
+    login: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1)
+
+
+class UserCreate(BaseModel):
+    login: str = Field(..., min_length=2, max_length=64)
+    password: str = Field(..., min_length=6)
+    role: Literal["viewer", "trader", "admin"] = "viewer"
+    full_name: str | None = Field(None, max_length=128)
+
+
+class UserRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    login: str
+    full_name: str | None
+    role: str
+    active: bool
+
+
+class NotificationRuleCreate(BaseModel):
+    """Правило доставки уведомлений."""
+
+    name: str = Field(..., min_length=1, max_length=128)
+    webhook_url: str = Field(..., min_length=8, max_length=512)
+    events: list[
+        Literal["limit_breach", "offer_soon", "cash_gap", "price_move", "volume_anomaly"]
+    ] = Field(default_factory=lambda: ["limit_breach"])
+
+
+class NotificationRuleRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    webhook_url: str
+    events: str
+    enabled: bool

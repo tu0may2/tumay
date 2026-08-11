@@ -3,6 +3,22 @@
   'use strict';
 
   const BASE = '';
+  const TOKEN_KEY = 'treasury-token';
+
+  /** Токен входа. Живёт между перезагрузками страницы, пока не истечёт. */
+  function token(value) {
+    try {
+      if (value === undefined) return localStorage.getItem(TOKEN_KEY);
+      if (value === null) localStorage.removeItem(TOKEN_KEY);
+      else localStorage.setItem(TOKEN_KEY, value);
+    } catch (error) { /* приватный режим — работаем без запоминания */ }
+    return value || null;
+  }
+
+  function authHeaders() {
+    const saved = token();
+    return saved ? { 'X-Auth-Token': saved } : {};
+  }
 
   function buildQuery(params) {
     const search = new URLSearchParams();
@@ -19,14 +35,22 @@
     return query ? `?${query}` : '';
   }
 
-  async function request(path, { method = 'GET', params, body } = {}) {
-    const options = { method, headers: {} };
-    if (body !== undefined) {
+  async function request(path, { method = 'GET', params, body, form } = {}) {
+    const options = { method, headers: authHeaders() };
+    if (form !== undefined) {
+      // FormData: заголовок с границей проставляет сам браузер
+      options.body = form;
+    } else if (body !== undefined) {
       options.headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify(body);
     }
 
     const response = await fetch(BASE + path + buildQuery(params), options);
+    if (response.status === 401 && typeof global.onAuthRequired === 'function') {
+      // Сессия истекла — интерфейс должен снова показать форму входа
+      token(null);
+      global.onAuthRequired();
+    }
     if (response.status === 204) return null;
 
     let payload = null;
@@ -55,7 +79,7 @@
    * Имя берём из Content-Disposition, чтобы совпадало с тем, что дал бэкенд.
    */
   async function download(path, { method = 'GET', params, body } = {}) {
-    const options = { method, headers: {} };
+    const options = { method, headers: authHeaders() };
     if (body !== undefined) {
       options.headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify(body);
@@ -89,6 +113,7 @@
 
   global.api = {
     download,
+    token,
     overview: () => request('/api/overview'),
     instruments: (params) => request('/api/instruments', { params }),
     instrument: (secid, params) => request(`/api/instruments/${encodeURIComponent(secid)}`, { params }),
@@ -133,5 +158,62 @@
     createDeal: (deal) => request('/api/portfolio/deals', { method: 'POST', body: deal }),
     createDealsBulk: (body) => request('/api/portfolio/deals/bulk', { method: 'POST', body }),
     deleteDeal: (id) => request(`/api/portfolio/deals/${id}`, { method: 'DELETE' }),
+
+    // Деньги
+    cashPosition: (portfolio) => request('/api/cash/position', { params: { portfolio } }),
+    cashCalendar: (portfolio, horizonDays) =>
+      request('/api/cash/calendar', { params: { portfolio, horizon_days: horizonDays } }),
+    cashHistory: (portfolio, days) =>
+      request('/api/cash/history', { params: { portfolio, days } }),
+    cashAccounts: (portfolio) => request('/api/cash/accounts', { params: { portfolio } }),
+    createAccount: (body) => request('/api/cash/accounts', { method: 'POST', body }),
+    deleteAccount: (id) => request(`/api/cash/accounts/${id}`, { method: 'DELETE' }),
+    cashFlows: (params) => request('/api/cash/flows', { params }),
+    createFlow: (body) => request('/api/cash/flows', { method: 'POST', body }),
+    deleteFlow: (id) => request(`/api/cash/flows/${id}`, { method: 'DELETE' }),
+    placements: (portfolio) => request('/api/cash/placements', { params: { portfolio } }),
+    createPlacement: (body) => request('/api/cash/placements', { method: 'POST', body }),
+    deletePlacement: (id) => request(`/api/cash/placements/${id}`, { method: 'DELETE' }),
+
+    // Импорт и сверка
+    importColumns: () => request('/api/import/columns'),
+    importPreview: (file, portfolio) => {
+      const form = new FormData();
+      form.append('file', file);
+      if (portfolio) form.append('portfolio', portfolio);
+      return request('/api/import/preview', { method: 'POST', form });
+    },
+    importApply: (deals) => request('/api/import/apply', { method: 'POST', body: { deals } }),
+    reconcile: (file, portfolio) => {
+      const form = new FormData();
+      form.append('file', file);
+      if (portfolio) form.append('portfolio', portfolio);
+      return request('/api/import/reconcile', { method: 'POST', form });
+    },
+
+    // История, отчёт, налоги, оферты
+    portfolioHistory: (name, days) =>
+      request('/api/history/portfolio', { params: { name, days } }),
+    takeSnapshot: (name) => request('/api/history/snapshot', { method: 'POST', params: { name } }),
+    offers: (name, horizonDays) =>
+      request('/api/offers', { params: { name, horizon_days: horizonDays } }),
+    taxes: () => request('/api/taxes'),
+    events: (name) => request('/api/events', { params: { name } }),
+
+    // Доступ и администрирование
+    authMode: () => request('/api/auth/mode'),
+    login: (login, password) =>
+      request('/api/auth/login', { method: 'POST', body: { login, password } }),
+    logout: () => request('/api/auth/logout', { method: 'POST' }),
+    me: () => request('/api/auth/me'),
+    users: () => request('/api/users'),
+    createUser: (body) => request('/api/users', { method: 'POST', body }),
+    disableUser: (id) => request(`/api/users/${id}`, { method: 'DELETE' }),
+    audit: (params) => request('/api/audit', { params }),
+    notificationRules: () => request('/api/notifications'),
+    createRule: (body) => request('/api/notifications', { method: 'POST', body }),
+    deleteRule: (id) => request(`/api/notifications/${id}`, { method: 'DELETE' }),
+    sendNotifications: (name, dryRun) =>
+      request('/api/notifications/send', { method: 'POST', params: { name, dry_run: dryRun } }),
   };
 })(window);

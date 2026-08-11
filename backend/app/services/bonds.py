@@ -22,6 +22,7 @@ from .analytics import (
     latest_rows,
     yield_curve,
 )
+from .treasury_extras import after_tax_yield
 
 #: Типы купона
 COUPON_FIXED = "fixed"
@@ -246,6 +247,12 @@ def analyse(
         else:
             row["current_yield_pct"] = None
 
+        # Сравнивать выпуски правильнее по доходности, которая останется
+        # после налога: купон и переоценка облагаются по разным ставкам
+        row["after_tax_yield_pct"] = after_tax_yield(
+            row.get("yield_pct"), instrument.coupon_percent, price
+        )
+
         rows.append(row)
 
     def _keep(row: dict[str, Any]) -> bool:
@@ -321,6 +328,7 @@ ANALYSIS_COLUMNS: tuple[dict[str, Any], ...] = (
     {"code": "settlement_amount", "title": "К оплате за бумагу", "kind": "number", "digits": 2},
     {"code": "yield_pct", "title": "Доходность, %", "kind": "number", "digits": 2},
     {"code": "current_yield_pct", "title": "Текущая доходность, %", "kind": "number", "digits": 2},
+    {"code": "after_tax_yield_pct", "title": "Доходность после налога, %", "kind": "number", "digits": 2},
     {"code": "curve_yield_pct", "title": "КБД на дюрации, %", "kind": "number", "digits": 2},
     {"code": "spread_to_curve_bp", "title": "Премия к КБД, бп", "kind": "number", "digits": 0},
     {"code": "z_spread_bp", "title": "Z-спред, бп", "kind": "number", "digits": 0},

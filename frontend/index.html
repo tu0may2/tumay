@@ -20,10 +20,19 @@
     <div class="ticker" id="ticker" aria-label="Ключевые индикаторы"></div>
 
     <div class="topbar__actions">
+      <label class="portfolio-pick" title="Все расчёты ведутся по выбранному портфелю">
+        <span>Портфель</span>
+        <select id="portfolio-select">
+          <option value="">Все сразу</option>
+        </select>
+      </label>
       <span class="status" id="status" title="Время последнего среза">—</span>
+      <span class="whoami" id="whoami" hidden></span>
       <button class="btn theme-toggle" id="btn-theme" type="button" title="Сменить тему">🌲</button>
+      <button class="btn" id="btn-auto" type="button" title="Автообновление раз в минуту">⏱ Авто</button>
       <button class="btn" id="btn-refresh" type="button">Обновить</button>
       <button class="btn btn--primary" id="btn-collect" type="button">Собрать данные</button>
+      <button class="btn" id="btn-logout" type="button" hidden>Выйти</button>
     </div>
   </header>
 
@@ -32,7 +41,10 @@
     <button class="tab" data-view="instruments" type="button">Инструменты</button>
     <button class="tab" data-view="bonds" type="button">Облигации</button>
     <button class="tab" data-view="portfolio" type="button">Портфель</button>
+    <button class="tab" data-view="cash" type="button">Деньги</button>
+    <button class="tab" data-view="imports" type="button">Импорт и сверка</button>
     <button class="tab" data-view="signals" type="button">Сигналы</button>
+    <button class="tab" data-view="admin" type="button">Настройки</button>
     <button class="tab" data-view="sources" type="button">Источники</button>
   </nav>
 
@@ -320,7 +332,28 @@ SU26238RMFS4
 
     <!-- Портфель -->
     <section class="view" id="view-portfolio">
+      <div class="toolbar">
+        <div class="segmented" id="history-range">
+          <button data-days="90" type="button">3 месяца</button>
+          <button data-days="365" class="is-active" type="button">Год</button>
+          <button data-days="1095" type="button">3 года</button>
+        </div>
+        <div class="card__tools">
+          <button class="btn btn--sm" id="snapshot-now" type="button">Зафиксировать стоимость</button>
+          <button class="btn btn--sm btn--primary" id="report-download" type="button">Отчёт для комитета (.xlsx)</button>
+        </div>
+      </div>
+
       <div class="kpi-grid" id="portfolio-kpi"></div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>История стоимости портфеля</h2>
+          <span class="card__hint" id="history-summary"></span>
+        </header>
+        <div class="card__body" id="history-chart"></div>
+        <p class="card__note" id="history-note"></p>
+      </article>
 
       <div class="grid grid--2">
         <article class="card">
@@ -461,6 +494,312 @@ SU26238RMFS4
       </div>
     </section>
 
+    <!-- Деньги -->
+    <section class="view" id="view-cash">
+      <div class="kpi-grid" id="cash-kpi"></div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Платёжный календарь</h2>
+          <div class="card__tools">
+            <div class="segmented" id="cash-horizon">
+              <button data-days="30" type="button">Месяц</button>
+              <button data-days="180" class="is-active" type="button">Полгода</button>
+              <button data-days="365" type="button">Год</button>
+            </div>
+            <span class="card__hint" id="cash-gap-hint"></span>
+          </div>
+        </header>
+        <div class="card__body" id="cash-calendar-chart"></div>
+        <div class="card__body table-wrap" id="cash-calendar-table" style="max-height:340px"></div>
+        <p class="card__note">Расчёты по сделкам, купоны и погашения из графика НРД, возвраты размещений и заведённые вручную движения. Остаток считается нарастающим итогом: строка, где он уходит в минус, — кассовый разрыв.</p>
+      </article>
+
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head">
+            <h2>Счета</h2>
+            <button class="btn btn--sm" id="account-add" type="button">Открыть счёт</button>
+          </header>
+          <form class="filters" id="account-form" hidden>
+            <label class="field">
+              <span>Название</span>
+              <input id="ac-name" placeholder="Расчётный в Сбере" required>
+            </label>
+            <label class="field">
+              <span>Валюта</span>
+              <select id="ac-currency">
+                <option>RUB</option><option>USD</option><option>EUR</option><option>CNY</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Банк</span>
+              <input id="ac-bank" placeholder="необязательно">
+            </label>
+            <label class="field">
+              <span>Портфель</span>
+              <input id="ac-portfolio" placeholder="Основной">
+            </label>
+            <div class="deal-form__actions">
+              <button class="btn btn--primary btn--sm" type="submit">Сохранить</button>
+              <button class="btn btn--sm" type="button" id="account-cancel">Отмена</button>
+              <span class="form-msg" id="account-msg"></span>
+            </div>
+          </form>
+          <div class="card__body table-wrap" id="accounts-table" style="max-height:300px"></div>
+        </article>
+
+        <article class="card">
+          <header class="card__head">
+            <h2>Движение по счёту</h2>
+            <span class="card__hint">поступление или списание</span>
+          </header>
+          <form class="card__body deal-form" id="flow-form">
+            <label class="field">
+              <span>Счёт</span>
+              <select id="fl-account" required></select>
+            </label>
+            <label class="field">
+              <span>Дата</span>
+              <input id="fl-date" type="date" required>
+            </label>
+            <label class="field">
+              <span>Сумма</span>
+              <input id="fl-amount" type="number" step="any" required placeholder="минус — списание">
+            </label>
+            <label class="field">
+              <span>Вид</span>
+              <select id="fl-kind">
+                <option value="deposit">Пополнение</option>
+                <option value="withdrawal">Вывод</option>
+                <option value="fee">Комиссия</option>
+                <option value="tax">Налог</option>
+                <option value="other">Прочее</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Основание</span>
+              <input id="fl-comment" placeholder="необязательно">
+            </label>
+            <label class="field field--check">
+              <input id="fl-planned" type="checkbox">
+              <span>Плановое (ещё не прошло)</span>
+            </label>
+            <div class="deal-form__actions">
+              <button class="btn btn--primary" type="submit">Записать</button>
+              <span class="form-msg" id="flow-msg"></span>
+            </div>
+          </form>
+          <div class="card__body table-wrap" id="flows-table" style="max-height:240px"></div>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Размещения и привлечения</h2>
+          <button class="btn btn--sm" id="placement-add" type="button">Добавить</button>
+        </header>
+        <form class="filters" id="placement-form" hidden>
+          <label class="field">
+            <span>Вид</span>
+            <select id="pl-kind">
+              <option value="deposit">Депозит (разместили)</option>
+              <option value="repo">РЕПО (привлекли)</option>
+              <option value="reverse_repo">Обратное РЕПО (разместили)</option>
+              <option value="loan">Кредит (привлекли)</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Контрагент</span>
+            <input id="pl-counterparty" placeholder="Банк">
+          </label>
+          <label class="field">
+            <span>Сумма</span>
+            <input id="pl-amount" type="number" step="any" min="0" required>
+          </label>
+          <label class="field">
+            <span>Валюта</span>
+            <select id="pl-currency">
+              <option>RUB</option><option>USD</option><option>EUR</option><option>CNY</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Ставка, %</span>
+            <input id="pl-rate" type="number" step="any" required>
+          </label>
+          <label class="field">
+            <span>Начало</span>
+            <input id="pl-start" type="date" required>
+          </label>
+          <label class="field">
+            <span>Окончание</span>
+            <input id="pl-end" type="date" required>
+          </label>
+          <label class="field">
+            <span>Обеспечение (для РЕПО)</span>
+            <input id="pl-collateral" placeholder="код бумаги">
+          </label>
+          <div class="deal-form__actions">
+            <button class="btn btn--primary btn--sm" type="submit">Сохранить</button>
+            <button class="btn btn--sm" type="button" id="placement-cancel">Отмена</button>
+            <span class="form-msg" id="placement-msg"></span>
+          </div>
+        </form>
+        <div class="card__body table-wrap" id="placements-table" style="max-height:340px"></div>
+        <p class="card__note">Проценты начисляются по фактическому числу дней от даты начала к сегодняшнему дню, база 365 дней. Депозит и обратное РЕПО добавляют ликвидность к возврату, РЕПО и кредит — уменьшают.</p>
+      </article>
+    </section>
+
+    <!-- Импорт и сверка -->
+    <section class="view" id="view-imports">
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head">
+            <h2>Импорт сделок из файла</h2>
+            <span class="card__hint">.xlsx или .csv</span>
+          </header>
+          <div class="card__body">
+            <div class="dropzone" id="import-drop">
+              <input type="file" id="import-file" accept=".xlsx,.xlsm,.csv,.txt" hidden>
+              <p><strong>Перетащите файл сюда</strong> или <button class="btn btn--sm" id="import-pick" type="button">выберите на диске</button></p>
+              <p class="dim" id="import-filename">Отчёт брокера или своя таблица со сделками</p>
+            </div>
+            <div class="toolbar">
+              <label class="field">
+                <span>Записать в портфель</span>
+                <input id="import-portfolio" placeholder="как в файле">
+              </label>
+              <button class="btn btn--primary btn--sm" id="import-apply" type="button" disabled>Загрузить в журнал</button>
+              <span class="form-msg" id="import-msg"></span>
+            </div>
+          </div>
+          <div class="card__body table-wrap" id="import-preview" style="max-height:420px"></div>
+        </article>
+
+        <article class="card">
+          <header class="card__head">
+            <h2>Сверка с выпиской депозитария</h2>
+            <span class="card__hint">код бумаги и количество</span>
+          </header>
+          <div class="card__body">
+            <div class="dropzone" id="recon-drop">
+              <input type="file" id="recon-file" accept=".xlsx,.xlsm,.csv,.txt" hidden>
+              <p><strong>Перетащите выписку сюда</strong> или <button class="btn btn--sm" id="recon-pick" type="button">выберите на диске</button></p>
+              <p class="dim" id="recon-filename">Остатки на счёте депо в НРД или у брокера</p>
+            </div>
+            <span class="form-msg" id="recon-msg"></span>
+          </div>
+          <div class="card__body table-wrap" id="recon-result" style="max-height:420px"></div>
+          <p class="card__note">Сверяются только количества. Расхождение означает пропущенную сделку, неучтённую амортизацию или ошибку ввода — до выяснения оценка портфеля неверна.</p>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Какие заголовки распознаются</h2>
+          <span class="card__hint">колонки в файле можно называть по-разному</span>
+        </header>
+        <div class="card__body table-wrap" id="import-columns"></div>
+      </article>
+    </section>
+
+    <!-- Настройки: доступ, уведомления, налоги -->
+    <section class="view" id="view-admin">
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head">
+            <h2>Доступ</h2>
+            <span class="card__hint" id="auth-state"></span>
+          </header>
+          <div class="card__body" id="auth-info"></div>
+          <form class="filters" id="user-form" hidden>
+            <label class="field">
+              <span>Логин</span>
+              <input id="u-login" required minlength="2">
+            </label>
+            <label class="field">
+              <span>Пароль</span>
+              <input id="u-password" type="password" required minlength="6">
+            </label>
+            <label class="field">
+              <span>Имя</span>
+              <input id="u-name" placeholder="необязательно">
+            </label>
+            <label class="field">
+              <span>Роль</span>
+              <select id="u-role">
+                <option value="viewer">Просмотр</option>
+                <option value="trader">Сделки и лимиты</option>
+                <option value="admin">Администратор</option>
+              </select>
+            </label>
+            <div class="deal-form__actions">
+              <button class="btn btn--primary btn--sm" type="submit">Завести</button>
+              <span class="form-msg" id="user-msg"></span>
+            </div>
+          </form>
+          <div class="card__body table-wrap" id="users-table" style="max-height:280px"></div>
+        </article>
+
+        <article class="card">
+          <header class="card__head">
+            <h2>Уведомления</h2>
+            <div class="card__tools">
+              <button class="btn btn--sm" id="rule-add" type="button">Добавить правило</button>
+              <button class="btn btn--sm" id="notify-test" type="button">Проверить</button>
+            </div>
+          </header>
+          <form class="filters" id="rule-form" hidden>
+            <label class="field">
+              <span>Название</span>
+              <input id="r-name" required>
+            </label>
+            <label class="field field--wide">
+              <span>Адрес вебхука</span>
+              <input id="r-url" required placeholder="https://…">
+            </label>
+            <div class="field field--wide">
+              <span>События</span>
+              <div class="checks" id="r-events">
+                <label><input type="checkbox" value="limit_breach" checked> Нарушение лимита</label>
+                <label><input type="checkbox" value="offer_soon" checked> Скоро оферта</label>
+                <label><input type="checkbox" value="cash_gap" checked> Кассовый разрыв</label>
+              </div>
+            </div>
+            <div class="deal-form__actions">
+              <button class="btn btn--primary btn--sm" type="submit">Сохранить</button>
+              <button class="btn btn--sm" type="button" id="rule-cancel">Отмена</button>
+              <span class="form-msg" id="rule-msg"></span>
+            </div>
+          </form>
+          <div class="card__body table-wrap" id="rules-table" style="max-height:220px"></div>
+          <p class="card__note">Подходит любой приёмник JSON: бот в Telegram, Slack, Mattermost или внутренний сервис. Текст события дублируется в поле <code>text</code>.</p>
+        </article>
+      </div>
+
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head"><h2>Налоги в расчётах</h2></header>
+          <div class="card__body" id="taxes-info"></div>
+        </article>
+        <article class="card">
+          <header class="card__head">
+            <h2>События, требующие внимания</h2>
+            <span class="card__hint">то, что будет разослано</span>
+          </header>
+          <div class="card__body" id="events-list"></div>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Журнал изменений</h2>
+          <span class="card__hint">кто и что менял</span>
+        </header>
+        <div class="card__body table-wrap" id="audit-table" style="max-height:420px"></div>
+      </article>
+    </section>
+
     <!-- Сигналы -->
     <section class="view" id="view-signals">
       <div class="grid grid--2">
@@ -489,6 +828,15 @@ SU26238RMFS4
           </div>
         </header>
         <div class="card__body table-wrap" id="watchlist-table" style="max-height:320px"></div>
+      </article>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Оферты по своим бумагам</h2>
+          <span class="card__hint">ближайшие 180 дней</span>
+        </header>
+        <div class="card__body table-wrap" id="offers-table"></div>
+        <p class="card__note">Пропущенная оферта означает, что бумага останется в портфеле до погашения: предъявление к выкупу требует заявки в срок, автоматически оно не происходит.</p>
       </article>
 
       <article class="card">
@@ -576,6 +924,31 @@ SU26238RMFS4
         </div>
       </footer>
     </div>
+  </div>
+
+  <!-- Вход. Показывается только когда включена проверка доступа. -->
+  <div class="modal modal--login" id="login-modal" hidden>
+    <div class="modal__backdrop"></div>
+    <form class="modal__box modal__box--narrow" id="login-form">
+      <header class="modal__head">
+        <h2>Вход в терминал</h2>
+      </header>
+      <div class="modal__body">
+        <label class="field">
+          <span>Логин</span>
+          <input id="li-login" autocomplete="username" required>
+        </label>
+        <label class="field">
+          <span>Пароль</span>
+          <input id="li-password" type="password" autocomplete="current-password" required>
+        </label>
+        <p class="form-msg" id="login-msg"></p>
+        <p class="card__note">Пароль первого администратора печатается в журнал сервера при создании учётной записи и больше нигде не хранится в открытом виде.</p>
+      </div>
+      <footer class="modal__foot">
+        <button class="btn btn--primary" type="submit">Войти</button>
+      </footer>
+    </form>
   </div>
 
   <div class="toast" id="toast" hidden></div>

@@ -347,3 +347,164 @@ class CollectionRun(Base):
     duration_sec: Mapped[float | None] = mapped_column(Float)
     rows: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+
+
+# ----------------------------------------------------------------------
+# Денежная позиция
+# ----------------------------------------------------------------------
+class CashAccount(Base):
+    """Счёт казначейства: рублёвый или валютный."""
+
+    __tablename__ = "cash_accounts"
+    __table_args__ = (UniqueConstraint("name", "currency", name="uq_account_name_ccy"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    currency: Mapped[str] = mapped_column(String(8), default="RUB", index=True)
+    portfolio: Mapped[str] = mapped_column(String(64), default="Основной", index=True)
+    bank: Mapped[str | None] = mapped_column(String(128))
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class CashFlow(Base):
+    """Движение денег по счёту.
+
+    Плановые движения (``is_planned``) не меняют текущий остаток, но попадают
+    в платёжный календарь — так виден кассовый разрыв до того, как он случится.
+    """
+
+    __tablename__ = "cash_flows"
+    __table_args__ = (Index("ix_cashflow_account_date", "account_id", "flow_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(
+        ForeignKey("cash_accounts.id", ondelete="CASCADE"), index=True
+    )
+    flow_date: Mapped[date] = mapped_column(Date, index=True)
+    #: Положительная сумма — поступление, отрицательная — списание
+    amount: Mapped[float] = mapped_column(Float)
+    #: deposit | withdrawal | trade | coupon | fee | tax | transfer | other
+    kind: Mapped[str] = mapped_column(String(24), default="other", index=True)
+    is_planned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class Placement(Base):
+    """Размещение или привлечение денег: депозит, РЕПО, обратное РЕПО."""
+
+    __tablename__ = "placements"
+    __table_args__ = (Index("ix_placement_dates", "start_date", "end_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: deposit | repo | reverse_repo | loan
+    kind: Mapped[str] = mapped_column(String(24), index=True)
+    portfolio: Mapped[str] = mapped_column(String(64), default="Основной", index=True)
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("cash_accounts.id", ondelete="SET NULL")
+    )
+    counterparty: Mapped[str | None] = mapped_column(String(128))
+    amount: Mapped[float] = mapped_column(Float)
+    currency: Mapped[str] = mapped_column(String(8), default="RUB")
+    #: Ставка годовых, %
+    rate: Mapped[float] = mapped_column(Float)
+    start_date: Mapped[date] = mapped_column(Date, index=True)
+    end_date: Mapped[date] = mapped_column(Date, index=True)
+    #: Обеспечение по РЕПО, если есть
+    collateral_secid: Mapped[str | None] = mapped_column(String(64))
+    comment: Mapped[str | None] = mapped_column(Text)
+    closed: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+# ----------------------------------------------------------------------
+# История, доступ и уведомления
+# ----------------------------------------------------------------------
+class PortfolioSnapshot(Base):
+    """Снимок стоимости портфеля на дату — основа кривой доходности."""
+
+    __tablename__ = "portfolio_snapshots"
+    __table_args__ = (
+        UniqueConstraint("portfolio", "snapshot_date", name="uq_snapshot_portfolio_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    portfolio: Mapped[str] = mapped_column(String(64), default="", index=True)
+    snapshot_date: Mapped[date] = mapped_column(Date, index=True)
+
+    total_value: Mapped[float] = mapped_column(Float)
+    total_cost: Mapped[float | None] = mapped_column(Float)
+    cash_value: Mapped[float | None] = mapped_column(Float)
+    price_pnl: Mapped[float | None] = mapped_column(Float)
+    fx_pnl: Mapped[float | None] = mapped_column(Float)
+    coupon_result: Mapped[float | None] = mapped_column(Float)
+    net_pnl: Mapped[float | None] = mapped_column(Float)
+    duration_years: Mapped[float | None] = mapped_column(Float)
+    yield_pct: Mapped[float | None] = mapped_column(Float)
+    positions: Mapped[int | None] = mapped_column(Integer)
+    #: Внешние вводы и выводы за день — нужны для корректной доходности
+    net_flow: Mapped[float] = mapped_column(Float, default=0.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class User(Base):
+    """Пользователь терминала."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    login: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    full_name: Mapped[str | None] = mapped_column(String(128))
+    password_hash: Mapped[str] = mapped_column(String(256))
+    #: viewer | trader | admin
+    role: Mapped[str] = mapped_column(String(16), default="viewer", index=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    last_login: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class Session_(Base):
+    """Активная сессия входа."""
+
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+
+
+class AuditRecord(Base):
+    """Кто, что и когда изменил."""
+
+    __tablename__ = "audit_log"
+    __table_args__ = (Index("ix_audit_created", "created_at"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_login: Mapped[str | None] = mapped_column(String(64), index=True)
+    #: create | update | delete | import | login
+    action: Mapped[str] = mapped_column(String(24), index=True)
+    entity: Mapped[str] = mapped_column(String(48), index=True)
+    entity_id: Mapped[str | None] = mapped_column(String(64))
+    detail: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class NotificationRule(Base):
+    """Куда и о чём слать уведомления."""
+
+    __tablename__ = "notification_rules"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128))
+    #: Адрес вебхука: подходит Telegram, Slack, Mattermost и любой приёмник JSON
+    webhook_url: Mapped[str] = mapped_column(String(512))
+    #: limit_breach | offer_soon | price_move | volume_anomaly | cash_gap
+    events: Mapped[str] = mapped_column(String(256), default="limit_breach")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
