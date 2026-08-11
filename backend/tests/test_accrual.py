@@ -308,8 +308,13 @@ def test_restored_value_not_converted_twice(session):
     assert settlement["value_rub"] == pytest.approx(800.0, abs=0.5)
 
 
-def test_real_mismatch_is_reported(session):
-    """Если график расходится с биржей по существу, об этом надо сказать."""
+def test_exchange_value_wins_over_announced_coupon(session):
+    """Объявленный купон — прогноз, биржевой НКД — деньги по сделке.
+
+    У выпусков с ежедневным начислением по плавающей ставке НКД внутри
+    периода растёт неровно, и линейная доля объявленного купона расходится с
+    тем, что биржа реально посчитает к расчётам. Доверяем бирже.
+    """
     bond = add_bond(
         session, coupon_value=36.4, coupon_period=182,
         next_coupon_date=date(2026, 12, 2),
@@ -319,8 +324,55 @@ def test_real_mismatch_is_reported(session):
     profile = accrual_service.accrual_profile(
         session, bond, exchange_value=99.0, settle_date=date(2026, 8, 12),
     )
-    assert profile["mismatch"] is not None
-    assert "график" in profile["mismatch"]["note"]
+    settlement = profile["settlement"]
+    # На дату расчётов совпадает с биржей ровно, без предупреждений
+    assert settlement["value"] == pytest.approx(99.0)
+    assert profile["mismatch"] is None
+    # И выпуск помечен как плавающий, чтобы число не приняли за точное
+    assert settlement["floating"] is True
+    assert settlement["estimate"] is False
+    assert profile["today"]["estimate"] is True
+
+
+def test_fixed_coupon_stays_exact(session):
+    """Когда объявленный купон сходится с биржей, оценкой ничего не метим."""
+    bond = add_bond(
+        session, coupon_value=36.4, coupon_period=182,
+        next_coupon_date=date(2026, 12, 2),
+    )
+    session.commit()
+
+    # 70 дней из 182 по купону 36,4 — ровно 14,0
+    profile = accrual_service.accrual_profile(
+        session, bond, exchange_value=14.0, settle_date=date(2026, 8, 12),
+    )
+    settlement = profile["settlement"]
+    assert settlement["floating"] is False
+    assert settlement["estimate"] is False
+    assert profile["today"]["estimate"] is False
+
+
+def test_foreign_bond_is_not_anchored_to_rouble_value(session):
+    """У валютного выпуска купон в валюте, а биржевой НКД в рублях.
+
+    Опираться на биржевое число нельзя — оно в других деньгах, и такой
+    «якорь» превратил бы доллары в рубли молча.
+    """
+    bond = add_bond(
+        session, secid="USDBOND", face_unit="USD",
+        coupon_value=38.23, coupon_period=183,
+        next_coupon_date=date(2026, 12, 29),
+    )
+    session.add(FxRate(source="cbr", code="USD", rate_date=date.today(), value=80.0, nominal=1))
+    session.commit()
+
+    profile = accrual_service.accrual_profile(
+        session, bond, exchange_value=735.35, settle_date=date(2026, 8, 12),
+    )
+    settlement = profile["settlement"]
+    assert settlement["currency"] == "USD"
+    assert settlement["value"] == pytest.approx(9.1919, abs=0.001)
+    assert settlement["floating"] is False
 
 
 # ----------------------------------------------------------------------

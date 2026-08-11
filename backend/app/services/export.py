@@ -90,6 +90,10 @@ PARAMS: tuple[Param, ...] = (
     Param("settle_date", "Дата расчётов", "Облигации", "",
           kind="date", agg="last", computed=True,
           hint="День, к которому относится НКД на дату расчётов"),
+    Param("accrued_basis", "НКД: точность", "Облигации", "",
+          kind="text", agg="last", computed=True,
+          hint="У выпусков с плавающей ставкой НКД внутри периода растёт "
+               "неравномерно: точен он только на дату расчётов"),
     Param("yield_close", "Доходность к закрытию, %", "Облигации", "yield_close", agg="avg"),
     Param("yield_at_wap", "Доходность к СВЦ, %", "Облигации", "yield_at_wap", agg="avg"),
     Param("duration_days", "Дюрация, дней", "Облигации", "duration_days",
@@ -466,7 +470,9 @@ def _computed_values(item: Resolved, codes: Sequence[str]) -> dict[str, Any]:
     публикует НКД в истории. Иначе у замещающего выпуска соседние колонки
     оказались бы в разных валютах: 1149 ₽ против 15 $.
     """
-    wanted = {"accrued_today", "accrued_settlement", "settle_date"} & set(codes)
+    wanted = {
+        "accrued_today", "accrued_settlement", "settle_date", "accrued_basis",
+    } & set(codes)
     if not wanted or item.kind != "bond":
         return {}
 
@@ -506,6 +512,12 @@ def _computed_values(item: Resolved, codes: Sequence[str]) -> dict[str, Any]:
                 else (quote.accrued_interest if quote else None)
             ),
             "settle_date": profile["settle_date"],
+            # В Excel подсказку не наведёшь, поэтому пишем словами
+            "accrued_basis": (
+                None if today_row is None
+                else "оценка: плавающий купон" if today_row["estimate"]
+                else "точно"
+            ),
         }
 
 

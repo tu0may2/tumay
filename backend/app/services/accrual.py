@@ -34,6 +34,15 @@ TOLERANCE_PCT = 1.0
 #: Абсолютный порог для рублёвых копеек: процент от нуля бессмыслен
 TOLERANCE_ABS = 0.05
 
+#: Насколько объявленный купон может расходиться с биржевым НКД, оставаясь
+#: объяснимым округлением. Больше — значит купон был лишь прогнозом.
+_ANCHOR_TOLERANCE = 0.005
+
+
+def _is_rouble(instrument: Instrument) -> bool:
+    """Номинал выражен в рублях — значит купон и биржевой НКД в одних деньгах."""
+    return (instrument.face_unit or "SUR").upper() in ("SUR", "RUB", "RUR")
+
 
 def _coupon_schedule(session: Session, instrument: Instrument) -> list[CorpAction]:
     """Купоны выпуска по возрастанию даты."""
@@ -155,6 +164,9 @@ def accrued_on(
                 "face_unit": instrument.face_unit,
                 "source": "бескупонный выпуск: купонных периодов нет",
                 "value_basis": "face",
+                "floating": False,
+                "estimate": False,
+                "note": "Купона нет, поэтому накапливать нечего.",
             }
         return None
 
@@ -168,16 +180,41 @@ def accrued_on(
         return None
 
     currency = "face"
+    implied = _implied_coupon(exchange_value, settle_date, start, end, days_total)
+
     # Ноль здесь означает «ставка не объявлена», а не бескупонный выпуск:
     # у настоящего дисконтного выпуска не бывает купонного периода
     if not coupon_value:
-        coupon_value = _implied_coupon(
-            exchange_value, settle_date, start, end, days_total
-        )
-        if coupon_value is None:
+        if implied is None:
             return None
+        coupon_value = implied
         source = "биржевой НКД и границы купонного периода"
         currency = "settlement"
+    elif implied is not None and _is_rouble(instrument):
+        # Объявленный купон — не всегда факт. У выпусков с ежедневным
+        # начислением по плавающей ставке НКД внутри периода растёт неровно,
+        # и линейная доля объявленного купона расходится с тем, что биржа
+        # реально считает к расчётам. Биржевое значение — деньги по сделке,
+        # поэтому при расхождении больше копейки верим ему, а объявленный
+        # купон считаем прогнозом.
+        #
+        # Сравнение имеет смысл только для рублёвых выпусков: у валютных
+        # купон выражен в валюте номинала, а биржевой НКД — в рублях.
+        days_at_settle = (settle_date - start).days
+        projected = coupon_value * days_at_settle / days_total
+        if abs(projected - exchange_value) > _ANCHOR_TOLERANCE:
+            coupon_value = implied
+            source = "биржевой НКД и границы купонного периода"
+            currency = "settlement"
+
+    # Ставка периода считается твёрдой, когда купон объявлен и совпадает с
+    # тем, что биржа считает к расчётам. Если пришлось опереться на биржевой
+    # НКД, значит внутри периода ставка меняется день ото дня — точное
+    # значение известно только на дату расчётов, остальное оценка.
+    floating = currency == "settlement"
+    # В день начала периода накоплено ноль при любой ставке, поэтому оценкой
+    # такое значение не является — оно точное само по себе
+    estimate = floating and on_date != settle_date and days_passed > 0
 
     return {
         "date": on_date,
@@ -192,6 +229,18 @@ def accrued_on(
         "source": source,
         #: face — в валюте номинала, settlement — уже в рублях расчётов
         "value_basis": currency,
+        #: Ставка периода не зафиксирована: выпуск с плавающим купоном
+        "floating": floating,
+        #: Значение на эту дату — оценка, а не точное число биржи
+        "estimate": estimate,
+        "note": (
+            "Плавающий купон: ставка меняется внутри периода, поэтому точное "
+            "значение биржа публикует только на дату расчётов. На остальные "
+            "даты показана оценка — доля периода от фактически накопленного."
+            if floating else
+            "Купон периода объявлен, НКД растёт равномерно — значение точное "
+            "на любую дату периода."
+        ),
     }
 
 

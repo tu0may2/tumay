@@ -609,10 +609,18 @@
         {
           title: 'НКД сегодня',
           className: 'num',
-          render: (row) =>
-            fmt.isNum(row.accrued_today)
-              ? `<span title="прошло ${row.accrued_days_passed} дн., до купона ${row.accrued_days_left} дн.">${fmt.num(row.accrued_today, 2)}</span>`
-              : '<span class="dim">—</span>',
+          render: (row) => {
+            if (!fmt.isNum(row.accrued_today)) return '<span class="dim">—</span>';
+            // У флоатера ставка меняется внутри периода: значение на любую
+            // дату, кроме расчётной, — оценка, и это должно быть видно
+            const hint = row.accrued_estimate
+              ? `Оценка: плавающий купон, ставка меняется внутри периода. Прошло ${row.accrued_days_passed} дн., до купона ${row.accrued_days_left} дн.`
+              : `Прошло ${row.accrued_days_passed} дн., до купона ${row.accrued_days_left} дн.`;
+            const value = fmt.num(row.accrued_today, 2);
+            return `<span title="${fmt.esc(hint)}">${
+              row.accrued_estimate ? `<span class="approx">≈</span>${value}` : value
+            }</span>`;
+          },
         },
         { title: 'Полная цена', className: 'num', render: (row) => fmt.num(row.dirty_price, 2) },
         { title: 'Доходность', className: 'num', render: (row) => `<b>${fmt.pct(row.yield_pct)}</b>` },
@@ -2782,9 +2790,11 @@
   function accrualValue(row) {
     if (!row) return '<span class="dim">—</span>';
     const base = fmt.num(row.value, row.value > 100 ? 2 : 4);
-    return row.currency && row.currency !== 'RUB'
+    const shown = row.currency && row.currency !== 'RUB'
       ? `${base} <span class="dim">${fmt.esc(row.currency)}</span>`
       : base;
+    // Знак приближения честнее, чем ровное число там, где его нет
+    return row.estimate ? `<span class="approx">≈</span>${shown}` : shown;
   }
 
   function accrualHint(row) {
@@ -2804,7 +2814,21 @@
     }
 
     const row = profile.today || profile.settlement;
+    const floating = row.floating;
     container.innerHTML = `
+      ${floating ? `
+      <div class="notice notice--warn">
+        <div class="notice__title">Плавающий купон — НКД на прочие даты приблизителен</div>
+        <div class="notice__body">
+          Ставка этого выпуска меняется внутри купонного периода, поэтому НКД
+          растёт неравномерно. Биржа публикует точное значение только на дату
+          расчётов${profile.settle_date ? ` (${fmt.date(profile.settle_date)})` : ''} —
+          <b>${fmt.num(profile.exchange_value, 2)}</b>. Остальные даты
+          рассчитаны от него по доле периода и помечены знаком «≈».
+          ${fmt.isNum(row.coupon_value) ? `Купон периода по факту начисления — около ${fmt.num(row.coupon_value, 2)}.` : ''}
+        </div>
+      </div>` : ''}
+
       <div class="stat-grid stat-grid--tight">
         <div class="stat">
           <div class="stat__label">На сегодня</div>

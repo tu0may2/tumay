@@ -281,6 +281,15 @@ def analyse(
             accrued_today["days_passed"] if accrued_today else None
         )
         row["accrued_days_left"] = accrued_today["days_left"] if accrued_today else None
+        # Пометка для таблицы: у флоатера НКД на дату, кроме расчётной, — оценка
+        row["accrued_estimate"] = bool(accrued_today and accrued_today["estimate"])
+        row["accrued_floating"] = bool(accrued_today and accrued_today["floating"])
+        # Отдельным текстом для выгрузки: в Excel подсказку не наведёшь
+        row["accrued_basis"] = (
+            None if accrued_today is None
+            else "оценка: плавающий купон" if accrued_today["estimate"]
+            else "точно"
+        )
 
         rows.append(row)
 
@@ -355,6 +364,7 @@ ANALYSIS_COLUMNS: tuple[dict[str, Any], ...] = (
     {"code": "accrued_interest", "title": "НКД на расчёты", "kind": "number", "digits": 2},
     {"code": "settle_date", "title": "Дата расчётов", "kind": "date"},
     {"code": "accrued_today", "title": "НКД на сегодня", "kind": "number", "digits": 4},
+    {"code": "accrued_basis", "title": "НКД: точность", "kind": "text"},
     {"code": "accrued_days_passed", "title": "Дней купона прошло", "kind": "number", "digits": 0},
     {"code": "accrued_days_left", "title": "Дней до купона", "kind": "number", "digits": 0},
     {"code": "dirty_price", "title": "Полная цена, %", "kind": "number", "digits": 4},
