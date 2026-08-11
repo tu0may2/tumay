@@ -12,7 +12,7 @@ import logging
 import re
 import statistics
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Callable, Iterable, Sequence
 
 from sqlalchemy import select
@@ -67,7 +67,6 @@ PARAMS: tuple[Param, ...] = (
     Param("wa_price", "Средневзвешенная цена", "Цены", "wa_price",
           digits=4, agg="minmax_avg", default=True),
     Param("close", "Цена закрытия", "Цены", "close", digits=4, agg="last", default=True),
-    Param("legal_close", "Офиц. цена закрытия", "Цены", "legal_close", digits=4, agg="last"),
     Param("open", "Цена открытия", "Цены", "open", digits=4, agg="first"),
     Param("high", "Максимум", "Цены", "high", digits=4, agg="max"),
     Param("low", "Минимум", "Цены", "low", digits=4, agg="min"),
@@ -79,30 +78,18 @@ PARAMS: tuple[Param, ...] = (
     Param("accrued_interest", "НКД на дату торгов", "Облигации", "accrued_interest",
           digits=2, agg="last", default=True,
           hint="Как публиковала биржа в тот торговый день"),
-    Param("accrued_today", "НКД на сегодня", "Облигации", "",
+    Param("accrued_today", "НКД на дату", "Облигации", "",
           digits=2, agg="last", computed=True,
-          hint="Расчёт по графику купонов на текущую дату, в рублях расчётов; "
-               "одинаков для всех строк выпуска"),
+          hint="Расчёт по графику купонов на дату строки. Заполнен и в дни без "
+               "торгов, включая сегодняшний: НКД накапливается каждый день"),
     Param("accrued_settlement", "НКД на дату расчётов", "Облигации", "",
           digits=2, agg="last", computed=True,
-          hint="То же число, что на карточке бумаги на сайте MOEX: сделка "
-               "сегодня исполняется в режиме T+1, и купон считают по дню расчётов"),
-    Param("settle_date", "Дата расчётов", "Облигации", "",
-          kind="date", agg="last", computed=True,
-          hint="День, к которому относится НКД на дату расчётов"),
-    Param("accrued_basis", "НКД: точность", "Облигации", "",
-          kind="text", agg="last", computed=True,
-          hint="У выпусков с плавающей ставкой НКД внутри периода растёт "
-               "неравномерно: точен он только на дату расчётов"),
-    Param("yield_close", "Доходность к закрытию, %", "Облигации", "yield_close", agg="avg"),
+          hint="НКД по сделке, заключённой в этот день: в режиме T+1 расчёты "
+               "проходят следующим рабочим днём"),
     Param("yield_at_wap", "Доходность к СВЦ, %", "Облигации", "yield_at_wap", agg="avg"),
     Param("duration_days", "Дюрация, дней", "Облигации", "duration_days",
           digits=0, agg="last"),
-    Param("coupon_percent", "Купон, %", "Облигации", "coupon_percent", agg="last"),
     Param("face_value", "Номинал", "Облигации", "face_value", agg="last"),
-    # Справочные
-    Param("currency", "Валюта торгов", "Справка", "currency", kind="text", agg="last",
-          default=True),
 )
 
 PARAMS_BY_CODE = {param.code: param for param in PARAMS}
@@ -459,24 +446,39 @@ def _row_identity(item: Resolved) -> dict[str, Any]:
     return {"secid": item.secid, "isin": item.isin, "name": item.name}
 
 
-def _computed_values(item: Resolved, codes: Sequence[str]) -> dict[str, Any]:
-    """Величины, которые считаются по бумаге, а не по дню торгов.
+def _next_business_day(day: date) -> date:
+    """Дата расчётов по сделке этого дня: режим T+1, выходные пропускаем.
 
-    Сейчас это НКД на сегодня: биржа публикует его только на дату расчётов, а
-    в истории торгов лежит НКД того дня, к которому относится строка. Обе
-    величины нужны, поэтому они живут отдельными параметрами.
+    Биржевые праздники здесь не учитываются — их календарь открытый API не
+    отдаёт, поэтому в праздничные дни дата расчётов может оказаться на день
+    раньше фактической.
+    """
+    nxt = day + timedelta(days=1)
+    while nxt.weekday() >= 5:
+        nxt += timedelta(days=1)
+    return nxt
 
-    Значение отдаём в рублях расчётов — в тех же деньгах, в которых биржа
+
+def _accrual_series(
+    item: Resolved, dates: Sequence[date], codes: Sequence[str]
+) -> dict[date, dict[str, Any]]:
+    """НКД на каждую дату периода.
+
+    В истории торгов лежит НКД только за дни, когда были торги, — сегодняшнего
+    там нет вовсе, потому что итоги дня публикуются назавтра. Но купон
+    накапливается каждый день, поэтому расчётные значения заполняются на весь
+    выбранный период, включая выходные и сегодняшний день.
+
+    Значения отдаются в рублях расчётов — в тех же деньгах, в которых биржа
     публикует НКД в истории. Иначе у замещающего выпуска соседние колонки
     оказались бы в разных валютах: 1149 ₽ против 15 $.
     """
-    wanted = {
-        "accrued_today", "accrued_settlement", "settle_date", "accrued_basis",
-    } & set(codes)
-    if not wanted or item.kind != "bond":
+    wanted = {"accrued_today", "accrued_settlement"} & set(codes)
+    if not wanted or item.kind != "bond" or not dates:
         return {}
 
-    from .accrual import accrual_profile
+    from .accrual import accrued_on
+    from .fx import FxBook, instrument_currency
 
     with session_scope() as session:
         instrument = session.execute(
@@ -484,41 +486,62 @@ def _computed_values(item: Resolved, codes: Sequence[str]) -> dict[str, Any]:
                 Instrument.secid == item.secid, Instrument.board == item.board
             )
         ).scalar_one_or_none()
-        if instrument is None:
+        if instrument is None or instrument.kind != "bond":
             return {}
 
-        # Биржевой НКД нужен для выпусков с плавающим купоном: у них ставка
-        # периода не объявлена, и купон восстанавливается из него
+        # Биржевой НКД нужен выпускам с плавающим купоном: ставка периода у них
+        # не объявлена, и величина купона восстанавливается из него
         quote = session.execute(
             select(Quote)
             .where(Quote.instrument_id == instrument.id)
             .order_by(Quote.ts.desc())
             .limit(1)
         ).scalar_one_or_none()
+        exchange_value = quote.accrued_interest if quote else None
+        settle_date = quote.settle_date if quote else None
 
-        profile = accrual_profile(
-            session,
-            instrument,
-            exchange_value=quote.accrued_interest if quote else None,
-            settle_date=quote.settle_date if quote else None,
-        )
-        today_row = profile["today"]
-        settlement_row = profile["settlement"]
+        fx = FxBook(session)
+        rate = fx.rate(instrument_currency(instrument)) or 1.0
+
+        def _value(day: date) -> float | None:
+            row = accrued_on(
+                session, instrument, day,
+                exchange_value=exchange_value, settle_date=settle_date,
+            )
+            if row is None:
+                return None
+            # Восстановленный из биржевого НКД купон уже в рублях расчётов
+            multiplier = 1.0 if row.get("value_basis") == "settlement" else rate
+            return round(row["value"] * multiplier, 2)
+
+        cache: dict[date, float | None] = {}
+
+        def _cached(day: date) -> float | None:
+            if day not in cache:
+                cache[day] = _value(day)
+            return cache[day]
+
         return {
-            "accrued_today": today_row["value_rub"] if today_row else None,
-            # Биржа публикует именно это число, поэтому по нему сверяются
-            "accrued_settlement": (
-                settlement_row["value_rub"] if settlement_row
-                else (quote.accrued_interest if quote else None)
-            ),
-            "settle_date": profile["settle_date"],
-            # В Excel подсказку не наведёшь, поэтому пишем словами
-            "accrued_basis": (
-                None if today_row is None
-                else "оценка: плавающий купон" if today_row["estimate"]
-                else "точно"
-            ),
+            day: {
+                "accrued_today": _cached(day),
+                "accrued_settlement": _cached(_next_business_day(day)),
+            }
+            for day in dates
         }
+
+
+def date_range(date_from: date, date_to: date) -> list[date]:
+    """Все календарные дни периода.
+
+    Купон накапливается каждый день, поэтому в построчной выдаче нужны и
+    выходные, и сегодняшний день, по которому итогов торгов ещё нет.
+    """
+    if date_from > date_to:
+        date_from, date_to = date_to, date_from
+    return [
+        date_from + timedelta(days=offset)
+        for offset in range((date_to - date_from).days + 1)
+    ]
 
 
 def build_rows(
@@ -526,24 +549,32 @@ def build_rows(
     bars: Sequence[dict[str, Any]],
     codes: Sequence[str],
     mode: str,
-    computed: dict[str, Any] | None = None,
+    computed: dict[date, dict[str, Any]] | None = None,
+    dates: Sequence[date] | None = None,
 ) -> list[dict[str, Any]]:
     """Развернуть историю бумаги в строки результата.
 
-    ``computed`` — значения, посчитанные не по истории, а по бумаге целиком
-    (например, НКД на сегодня). Они одинаковы во всех строках выпуска.
+    ``computed`` — значения, посчитанные не по истории торгов, а по графику
+    купонов: словарь «дата → значения». ``dates`` задаёт полный период, чтобы
+    в таблице были и дни без торгов: рыночные колонки там пустые, а НКД есть.
     """
     params = [PARAMS_BY_CODE[code] for code in codes if code in PARAMS_BY_CODE]
     computed = computed or {}
 
     if mode == "by_date":
+        by_date = {bar["trade_date"]: bar for bar in bars}
+        days = list(dates) if dates else sorted(by_date)
+
         rows = []
-        for bar in bars:
+        for day in days:
+            bar = by_date.get(day, {})
             row = _row_identity(item)
-            row["trade_date"] = bar["trade_date"]
+            row["trade_date"] = day
+            #: Торгов в этот день не было — рыночные колонки пустые
+            row["no_trades"] = day not in by_date
             for param in params:
                 row[param.code] = (
-                    computed.get(param.code) if param.computed
+                    computed.get(day, {}).get(param.code) if param.computed
                     else bar.get(param.field)
                 )
             rows.append(row)
@@ -552,11 +583,16 @@ def build_rows(
     if not bars:
         return []
 
+    # В своде расчётные величины берём на последний день периода
+    last_day = max(computed) if computed else None
+
     row = _row_identity(item)
     row["days"] = len(bars)
     for param in params:
         if param.computed:
-            row[param.code] = computed.get(param.code)
+            row[param.code] = (
+                computed.get(last_day, {}).get(param.code) if last_day else None
+            )
             continue
         values = [bar.get(param.field) for bar in bars]
         if param.kind == "text":
@@ -580,7 +616,13 @@ async def run_query(
     codes: Sequence[str],
     mode: str = "by_date",
 ) -> dict[str, Any]:
-    """Полный цикл: разобрать список → найти бумаги → загрузить → собрать таблицу."""
+    """Полный цикл: разобрать список → найти бумаги → загрузить → собрать таблицу.
+
+    В построчной выдаче строка появляется на каждый день периода, а не только
+    на дни с торгами: купон накапливается ежедневно, и НКД за выходные и за
+    сегодня нужен так же, как за торговый день. Рыночные колонки в таких
+    строках пустые — итогов торгов по ним нет.
+    """
     identifiers = parse_identifiers(raw_identifiers)
     if not identifiers:
         return {
@@ -593,6 +635,7 @@ async def run_query(
 
     if date_from > date_to:
         date_from, date_to = date_to, date_from
+    period = date_range(date_from, date_to)
 
     warnings: list[str] = []
     async with MoexSource() as moex:
@@ -619,10 +662,15 @@ async def run_query(
         _persist(item, bars)
         if not bars:
             no_data.append(item.query)
-            continue
+
         # Считаем после _persist: бумага уже в справочнике, и по ней доступны
         # график купонов и последний срез
-        rows.extend(build_rows(item, bars, codes, mode, _computed_values(item, codes)))
+        accrual = _accrual_series(item, period, codes)
+        if not bars and not accrual:
+            # Ни торгов, ни купонов — строки были бы пустыми
+            continue
+
+        rows.extend(build_rows(item, bars, codes, mode, accrual, dates=period))
         found.append(
             {
                 "query": item.query,
@@ -638,7 +686,14 @@ async def run_query(
     if missing:
         warnings.append("Не найдены на бирже: " + ", ".join(missing))
     if no_data:
-        warnings.append("Нет торгов за период: " + ", ".join(no_data))
+        # «Торгов не было» и «итоги ещё не опубликованы» — разные вещи: за
+        # сегодняшний день биржа отдаёт историю только назавтра, и назвать
+        # это отсутствием торгов было бы неправдой
+        warnings.append(
+            "Итогов торгов за период нет: " + ", ".join(no_data)
+            + ". За сегодняшний день биржа публикует их на следующий рабочий "
+            "день, за выходные торгов не бывает. НКД в таких строках рассчитан."
+        )
     if len(identifiers) == MAX_SECURITIES:
         warnings.append(f"Список обрезан до {MAX_SECURITIES} бумаг")
 

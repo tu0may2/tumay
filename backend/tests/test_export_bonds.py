@@ -106,39 +106,89 @@ class TestBuildTable:
     def test_summary_of_empty_history(self):
         assert export_service.build_rows(self.ITEM, [], ["wa_price"], "summary") == []
 
-    def test_accrued_today_repeats_in_every_row(self):
-        """НКД на сегодня один для всей бумаги, а не свой на каждый день."""
-        rows = export_service.build_rows(
-            self.ITEM, self.BARS, ["accrued_interest", "accrued_today"], "by_date",
-            {"accrued_today": 1231.93},
-        )
-        assert [row["accrued_today"] for row in rows] == [1231.93, 1231.93]
-        # НКД дня остаётся своим у каждой строки
-        assert [row["accrued_interest"] for row in rows] == [1133.0, 1148.0]
+    def test_accrued_filled_for_every_day_of_period(self):
+        """НКД накапливается каждый день, а не только в дни торгов.
 
-    def test_accrued_today_is_not_aggregated(self):
-        """Сворачивать расчётную величину нечего — она и так одна."""
+        В истории торгов сегодняшнего дня нет — итоги публикуются назавтра.
+        Но купон уже накопился, и строка за сегодня должна быть, пусть цены в
+        ней и пустые.
+        """
+        period = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
+        accrual = {
+            date(2026, 8, 3): {"accrued_today": 1133.0, "accrued_settlement": 1148.0},
+            date(2026, 8, 4): {"accrued_today": 1148.0, "accrued_settlement": 1163.0},
+            date(2026, 8, 5): {"accrued_today": 1163.0, "accrued_settlement": 1178.0},
+        }
         rows = export_service.build_rows(
-            self.ITEM, self.BARS, ["accrued_today"], "summary",
-            {"accrued_today": 1231.93},
+            self.ITEM, self.BARS,
+            ["wa_price", "accrued_interest", "accrued_today", "accrued_settlement"],
+            "by_date", accrual, dates=period,
         )
-        assert rows[0]["accrued_today"] == 1231.93
 
-    def test_accrued_today_without_value_is_empty(self):
+        assert len(rows) == 3
+        # Торгов 5 августа не было: цена пустая, НКД на месте
+        last = rows[-1]
+        assert last["trade_date"] == date(2026, 8, 5)
+        assert last["no_trades"] is True
+        assert last["wa_price"] is None
+        assert last["accrued_interest"] is None
+        assert last["accrued_today"] == 1163.0
+        assert last["accrued_settlement"] == 1178.0
+        # В дни с торгами рыночные колонки заполнены
+        assert rows[0]["no_trades"] is False
+        assert rows[0]["wa_price"] == 85.0
+
+    def test_accrued_changes_day_to_day(self):
+        """Одно и то же число во всех строках было бы неправдой."""
+        period = [date(2026, 8, 3), date(2026, 8, 4)]
+        accrual = {
+            date(2026, 8, 3): {"accrued_today": 1133.0},
+            date(2026, 8, 4): {"accrued_today": 1148.0},
+        }
+        rows = export_service.build_rows(
+            self.ITEM, self.BARS, ["accrued_today"], "by_date", accrual, dates=period
+        )
+        assert [row["accrued_today"] for row in rows] == [1133.0, 1148.0]
+
+    def test_summary_takes_accrued_on_last_day(self):
+        """В своде расчётный НКД берётся на конец периода."""
+        accrual = {
+            date(2026, 8, 3): {"accrued_today": 1133.0},
+            date(2026, 8, 4): {"accrued_today": 1148.0},
+        }
+        rows = export_service.build_rows(
+            self.ITEM, self.BARS, ["accrued_today"], "summary", accrual
+        )
+        assert rows[0]["accrued_today"] == 1148.0
+
+    def test_accrued_without_data_is_empty(self):
         """Если купоны неизвестны, честнее пусто, чем ноль."""
         rows = export_service.build_rows(
-            self.ITEM, self.BARS, ["accrued_today"], "by_date", {}
+            self.ITEM, self.BARS, ["accrued_today"], "by_date", {},
+            dates=[date(2026, 8, 3)],
         )
         assert rows[0]["accrued_today"] is None
 
-    def test_accrued_today_column_has_no_aggregation_suffix(self):
+    def test_accrued_column_has_no_aggregation_suffix(self):
         """В своде подпись «на конец» была бы неправдой."""
         columns = export_service.build_columns(
             ["accrued_interest", "accrued_today"], "summary"
         )
         titles = {column["code"]: column["title"] for column in columns}
-        assert titles["accrued_today"] == "НКД на сегодня"
+        assert titles["accrued_today"] == "НКД на дату"
         assert titles["accrued_interest"].startswith("НКД на дату торгов,")
+
+    def test_settlement_skips_weekend(self):
+        """Расчёты по пятничной сделке проходят в понедельник, не в субботу."""
+        friday = date(2026, 8, 7)
+        assert export_service._next_business_day(friday) == date(2026, 8, 10)
+        assert export_service._next_business_day(date(2026, 8, 10)) == date(2026, 8, 11)
+
+    def test_date_range_covers_whole_period(self):
+        days = export_service.date_range(date(2026, 8, 3), date(2026, 8, 6))
+        assert days == [date(2026, 8, i) for i in (3, 4, 5, 6)]
+        # Порядок дат перепутан — период всё равно должен получиться
+        assert export_service.date_range(date(2026, 8, 6), date(2026, 8, 3)) == days
 
     def test_accrued_today_offered_in_catalog(self):
         catalog = export_service.parameter_catalog()
@@ -159,9 +209,21 @@ class TestBuildTable:
         assert "wa_price_avg" in codes and "wa_price_min" in codes
         assert "trade_date" not in codes
 
-    def test_text_parameter_not_aggregated_numerically(self):
-        rows = export_service.build_rows(self.ITEM, self.BARS, ["currency"], "summary")
-        assert rows[0]["currency"] == "SUR"
+    def test_removed_parameters_are_gone(self):
+        """Колонки, от которых отказались, не должны вернуться незаметно."""
+        codes = {param.code for param in export_service.PARAMS}
+        assert not codes & {
+            "legal_close", "yield_close", "coupon_percent", "currency",
+            "settle_date", "accrued_basis",
+        }
+
+    def test_unknown_parameter_is_ignored(self):
+        """Сохранённый отбор может ссылаться на убранный параметр."""
+        rows = export_service.build_rows(
+            self.ITEM, self.BARS, ["currency", "wa_price"], "summary"
+        )
+        assert "currency" not in rows[0]
+        assert rows[0]["wa_price_avg"] is not None
 
 
 class TestFiles:

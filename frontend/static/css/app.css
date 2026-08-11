@@ -671,3 +671,6 @@ tr.row--warn td { background: color-mix(in srgb, var(--warn) 10%, transparent); 
   .drawer__panel { width: 100%; }
   .modal__box { width: calc(100vw - 16px); max-height: calc(100vh - 24px); }
 }
+
+/* Строка периода без торгов: цены пустые, НКД есть */
+tr.row--quiet td { color: var(--text-mute); background: color-mix(in srgb, var(--bg-sunken) 55%, transparent); }

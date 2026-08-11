@@ -1041,6 +1041,12 @@
         emptyMessage: 'Данных за период нет — проверьте бумаги и даты',
       });
 
+      // Выходные и сегодняшний день: торгов не было, но НКД накопился.
+      // Приглушаем строку, чтобы прочерки в ценах не выглядели пропажей данных.
+      container.querySelectorAll('tbody tr').forEach((tr, index) => {
+        if (data.rows[index] && data.rows[index].no_trades) tr.classList.add('row--quiet');
+      });
+
       $('#e-xlsx').disabled = !state.exportReady;
       $('#e-csv').disabled = !state.exportReady;
     } catch (error) {
