@@ -134,6 +134,28 @@ def accrued_on(
         period = _period_from_reference(instrument, on_date)
         source = "справочник MOEX"
     if period is None:
+        # Купонного периода нет вовсе — так выглядят дисконтные выпуски и
+        # уже погашенные бумаги. У них НКД равен нулю по определению, и это
+        # утверждение, а не пропуск: прочерк вместо нуля читался бы как сбой.
+        #
+        # Нужно подтверждение, что периода нет, а не что данных не хватило:
+        # либо биржа сама показывает ноль, либо в справочнике стоит явная
+        # нулевая длина периода. Отсутствие котировки подтверждением не
+        # считается — иначе купонная бумага без среза получила бы ложный ноль.
+        if not coupons and (exchange_value == 0 or instrument.coupon_period == 0):
+            return {
+                "date": on_date,
+                "value": 0.0,
+                "coupon_value": 0.0,
+                "period_start": None,
+                "period_end": None,
+                "days_passed": 0,
+                "days_total": 0,
+                "days_left": 0,
+                "face_unit": instrument.face_unit,
+                "source": "бескупонный выпуск: купонных периодов нет",
+                "value_basis": "face",
+            }
         return None
 
     start, end, coupon_value = period

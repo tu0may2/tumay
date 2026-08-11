@@ -216,6 +216,33 @@ def test_three_dates_differ_by_one_day_each(session):
     assert at(date(2026, 8, 21)) == pytest.approx(5.04)
 
 
+def test_discount_bond_accrues_nothing(session):
+    """У бескупонного выпуска НКД равен нулю — это факт, а не пропуск.
+
+    Прочерк на месте нуля читается как сбой расчёта, хотя купонных периодов
+    у дисконтной бумаги нет вовсе и биржа тоже показывает ноль.
+    """
+    bond = add_bond(session, coupon_value=0.0, coupon_period=0, next_coupon_date=None)
+    session.commit()
+
+    row = accrual_service.accrued_on(session, bond, date.today(), exchange_value=0.0)
+    assert row["value"] == 0.0
+    assert row["days_total"] == 0
+    assert "бескупонный" in row["source"]
+
+
+def test_missing_coupon_data_is_not_reported_as_zero(session):
+    """Нехватка данных — не то же самое, что отсутствие купона.
+
+    Если о периодах ничего не известно и подтверждения от биржи нет, ноль
+    был бы утверждением о деньгах, которого мы сделать не можем.
+    """
+    bond = add_bond(session, coupon_value=None, coupon_period=None, next_coupon_date=None)
+    session.commit()
+
+    assert accrual_service.accrued_on(session, bond, date.today()) is None
+
+
 def test_unknown_coupon_without_exchange_value_is_unknown(session):
     """Без биржевого НКД восстанавливать нечего — честнее вернуть пусто."""
     bond = add_bond(
