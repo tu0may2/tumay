@@ -83,6 +83,13 @@ PARAMS: tuple[Param, ...] = (
           digits=2, agg="last", computed=True,
           hint="Расчёт по графику купонов на текущую дату, в рублях расчётов; "
                "одинаков для всех строк выпуска"),
+    Param("accrued_settlement", "НКД на дату расчётов", "Облигации", "",
+          digits=2, agg="last", computed=True,
+          hint="То же число, что на карточке бумаги на сайте MOEX: сделка "
+               "сегодня исполняется в режиме T+1, и купон считают по дню расчётов"),
+    Param("settle_date", "Дата расчётов", "Облигации", "",
+          kind="date", agg="last", computed=True,
+          hint="День, к которому относится НКД на дату расчётов"),
     Param("yield_close", "Доходность к закрытию, %", "Облигации", "yield_close", agg="avg"),
     Param("yield_at_wap", "Доходность к СВЦ, %", "Облигации", "yield_at_wap", agg="avg"),
     Param("duration_days", "Дюрация, дней", "Облигации", "duration_days",
@@ -459,7 +466,8 @@ def _computed_values(item: Resolved, codes: Sequence[str]) -> dict[str, Any]:
     публикует НКД в истории. Иначе у замещающего выпуска соседние колонки
     оказались бы в разных валютах: 1149 ₽ против 15 $.
     """
-    if "accrued_today" not in codes or item.kind != "bond":
+    wanted = {"accrued_today", "accrued_settlement", "settle_date"} & set(codes)
+    if not wanted or item.kind != "bond":
         return {}
 
     from .accrual import accrual_profile
@@ -489,7 +497,16 @@ def _computed_values(item: Resolved, codes: Sequence[str]) -> dict[str, Any]:
             settle_date=quote.settle_date if quote else None,
         )
         today_row = profile["today"]
-        return {"accrued_today": today_row["value_rub"] if today_row else None}
+        settlement_row = profile["settlement"]
+        return {
+            "accrued_today": today_row["value_rub"] if today_row else None,
+            # Биржа публикует именно это число, поэтому по нему сверяются
+            "accrued_settlement": (
+                settlement_row["value_rub"] if settlement_row
+                else (quote.accrued_interest if quote else None)
+            ),
+            "settle_date": profile["settle_date"],
+        }
 
 
 def build_rows(

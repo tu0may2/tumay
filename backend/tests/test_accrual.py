@@ -186,6 +186,36 @@ def test_unknown_coupon_restored_from_exchange_value(session):
     assert "биржевой НКД" in row["source"]
 
 
+def test_three_dates_differ_by_one_day_each(session):
+    """НКД растёт по дням, и три соседние даты дают три разных числа.
+
+    Случай из жизни: ЕвразХолдинг 003Р-01, купон выплачен 09.08, период 30
+    дней, биржа публикует 1,26 на дату расчётов 12.08. Значит, накопление
+    0,42 ₽ в день: 10.08 — 0,42, сегодня 11.08 — 0,84, расчёты 12.08 — 1,26.
+    Складывать эти числа между собой нельзя, хотя 0,42 + 0,84 = 1,26 здесь
+    совпадает случайно — просто первый и второй день дают третий.
+    """
+    bond = add_bond(
+        session, coupon_value=0.0, coupon_period=30,
+        next_coupon_date=date(2026, 9, 8),
+    )
+    session.commit()
+
+    def at(day):
+        row = accrual_service.accrued_on(
+            session, bond, day, exchange_value=1.26, settle_date=date(2026, 8, 12),
+        )
+        return row["value"]
+
+    assert at(date(2026, 8, 9)) == 0.0
+    assert at(date(2026, 8, 10)) == pytest.approx(0.42)
+    assert at(date(2026, 8, 11)) == pytest.approx(0.84)
+    assert at(date(2026, 8, 12)) == pytest.approx(1.26)
+    # Дальше сложение перестаёт совпадать: 4,20 + 4,62 ≠ 5,04
+    assert at(date(2026, 8, 20)) == pytest.approx(4.62)
+    assert at(date(2026, 8, 21)) == pytest.approx(5.04)
+
+
 def test_unknown_coupon_without_exchange_value_is_unknown(session):
     """Без биржевого НКД восстанавливать нечего — честнее вернуть пусто."""
     bond = add_bond(
