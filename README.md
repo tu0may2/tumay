@@ -260,7 +260,7 @@ backend/
     services/    сбор данных, планировщик, аналитика, портфель
     api/         REST-эндпоинты
     models.py    схема хранилища
-  tests/         223 теста
+  tests/         228 тестов
 frontend/
   index.html     интерфейс
   static/js/     логика и SVG-графики без внешних зависимостей

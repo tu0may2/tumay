@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..db import get_session
 from ..models import Deal, Instrument
 from ..schemas import DealBulkCreate, DealBulkResult, DealCreate, DealRead
+from ..services.auth import audit, require_trader
 from ..services import portfolio as portfolio_service
 from ..services import risk as risk_service
 
@@ -61,7 +62,11 @@ def list_deals(
     status_code=status.HTTP_201_CREATED,
     summary="Зарегистрировать сделку",
 )
-def create_deal(payload: DealCreate, session: Session = Depends(get_session)) -> Deal:
+def create_deal(
+    payload: DealCreate,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> Deal:
     """Добавить сделку. Инструмент должен быть в справочнике."""
     known = session.execute(
         select(Instrument.id).where(Instrument.secid == payload.secid).limit(1)
@@ -89,7 +94,9 @@ def create_deal(payload: DealCreate, session: Session = Depends(get_session)) ->
     summary="Добавить несколько сделок сразу",
 )
 def create_deals_bulk(
-    payload: DealBulkCreate, session: Session = Depends(get_session)
+    payload: DealBulkCreate,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
 ) -> dict[str, Any]:
     """Завести пачку сделок из витрины бумаг.
 
@@ -135,7 +142,11 @@ def create_deals_bulk(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Удалить сделку",
 )
-def delete_deal(deal_id: int, session: Session = Depends(get_session)) -> None:
+def delete_deal(
+    deal_id: int,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> None:
     deal = session.get(Deal, deal_id)
     if deal is None:
         raise HTTPException(status_code=404, detail="Сделка не найдена")

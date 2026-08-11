@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
+from ..services.auth import require_trader
 from ..models import Instrument, Limit, SavedScreen, WatchItem
 from ..schemas import (
     LimitCreate,
@@ -53,7 +54,11 @@ def list_limits(
     status_code=status.HTTP_201_CREATED,
     summary="Установить лимит",
 )
-def create_limit(payload: LimitCreate, session: Session = Depends(get_session)) -> Limit:
+def create_limit(
+    payload: LimitCreate,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> Limit:
     if payload.kind not in limits_service.LIMIT_KINDS:
         raise HTTPException(status_code=422, detail=f"Неизвестный вид лимита: {payload.kind}")
 
@@ -84,7 +89,11 @@ def create_limit(payload: LimitCreate, session: Session = Depends(get_session)) 
 @router.delete(
     "/limits/{limit_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Снять лимит"
 )
-def delete_limit(limit_id: int, session: Session = Depends(get_session)) -> None:
+def delete_limit(
+    limit_id: int,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> None:
     limit = session.get(Limit, limit_id)
     if limit is None:
         raise HTTPException(status_code=404, detail="Лимит не найден")
@@ -171,7 +180,9 @@ def list_screens(
     summary="Сохранить отбор",
 )
 def create_screen(
-    payload: SavedScreenCreate, session: Session = Depends(get_session)
+    payload: SavedScreenCreate,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
 ) -> SavedScreen:
     existing = session.execute(
         select(SavedScreen).where(
@@ -198,7 +209,11 @@ def create_screen(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Удалить отбор",
 )
-def delete_screen(screen_id: int, session: Session = Depends(get_session)) -> None:
+def delete_screen(
+    screen_id: int,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> None:
     screen = session.get(SavedScreen, screen_id)
     if screen is None:
         raise HTTPException(status_code=404, detail="Отбор не найден")
@@ -249,7 +264,9 @@ def get_watchlist(
     summary="Добавить в наблюдение",
 )
 def add_watch(
-    payload: WatchItemCreate, session: Session = Depends(get_session)
+    payload: WatchItemCreate,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
 ) -> WatchItem:
     known = session.execute(
         select(Instrument.id).where(Instrument.secid == payload.secid).limit(1)
@@ -283,7 +300,11 @@ def add_watch(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Убрать из наблюдения",
 )
-def remove_watch(item_id: int, session: Session = Depends(get_session)) -> None:
+def remove_watch(
+    item_id: int,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> None:
     item = session.get(WatchItem, item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="Запись не найдена")

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from ..db import get_session
 from ..models import CollectionRun, Instrument, Quote
 from ..schemas import CollectRequest, HealthResponse
+from ..services.auth import require_trader, require_viewer
 from ..services.collector import collector
 
 router = APIRouter(prefix="/api", tags=["Служебное"])
@@ -35,7 +36,9 @@ def health(session: Session = Depends(get_session)) -> dict[str, Any]:
 
 @router.post("/collect", summary="Запустить сбор данных")
 async def run_collection(
-    payload: CollectRequest, background: BackgroundTasks
+    payload: CollectRequest,
+    background: BackgroundTasks,
+    user: dict = Depends(require_trader),
 ) -> dict[str, str]:
     """Поставить полный цикл сбора в фон — ответ приходит сразу."""
     background.add_task(collector.collect_all, with_history=payload.with_history)
@@ -49,6 +52,7 @@ async def run_collection(
 def collection_runs(
     limit: int = Query(30, ge=1, le=200),
     session: Session = Depends(get_session),
+    user: dict = Depends(require_viewer),
 ) -> list[dict[str, Any]]:
     """Что и когда собиралось, сколько строк и с какой ошибкой."""
     runs = session.execute(
@@ -71,7 +75,7 @@ def collection_runs(
 
 
 @router.get("/sources", summary="Используемые источники данных")
-def sources() -> list[dict[str, Any]]:
+def sources(user: dict = Depends(require_viewer)) -> list[dict[str, Any]]:
     """Открытые источники и что именно берётся из каждого."""
     return [
         {

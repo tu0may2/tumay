@@ -628,3 +628,46 @@ tr.row--warn td { background: color-mix(in srgb, var(--warn) 10%, transparent); 
 .notice--warn { border-left-color: var(--warn); }
 .notice__title { font-size: 12.5px; font-weight: 600; margin-bottom: 4px; }
 .notice__body { font-size: 12px; color: var(--text-dim); line-height: 1.5; }
+
+/* ------------------------------------------------------------------ */
+/* Телефон                                                             */
+/* ------------------------------------------------------------------ */
+@media (max-width: 720px) {
+  /* Шапка на узком экране выше, чем на десктопе, и прежний отступ вкладок
+     оставлял их поверх содержимого. Прилипание тут только мешает. */
+  .topbar { position: static; gap: 10px; padding: 10px 12px; }
+  .tabs { position: sticky; top: 0; padding: 0 8px; }
+
+  .topbar__brand { flex: 1 1 100%; }
+  .topbar h1 { font-size: 15px; }
+  .topbar__subtitle { display: none; }
+
+  /* Бегущая строка на телефоне занимает весь экран, но прокручивается */
+  .ticker { flex: 1 1 100%; order: 3; gap: 14px; }
+  .topbar__actions { flex: 1 1 100%; flex-wrap: wrap; gap: 7px; }
+  .portfolio-pick { flex: 1 1 100%; }
+  .portfolio-pick select { flex: 1; max-width: none; }
+  .status { flex: 1 1 100%; }
+
+  main { padding: 12px; }
+  .grid { gap: 12px; }
+  .grid--2 { grid-template-columns: 1fr; }
+  .kpi-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 9px; }
+  .kpi__value { font-size: 18px; }
+
+  /* Формы в одну колонку: два поля рядом на телефоне нечитаемы */
+  .filters { grid-template-columns: 1fr; padding: 11px 12px; }
+  .deal-form { grid-template-columns: 1fr 1fr; }
+
+  .card__head { padding: 11px 12px; }
+  .card__body { padding: 11px 12px; }
+  .card__note { padding: 9px 12px 12px; }
+
+  /* Таблицы шире экрана: прокручиваем их, а не всю страницу */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { font-size: 12px; }
+
+  /* Окна и карточка бумаги — во весь экран */
+  .drawer__panel { width: 100%; }
+  .modal__box { width: calc(100vw - 16px); max-height: calc(100vh - 24px); }
+}
