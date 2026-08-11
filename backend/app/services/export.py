@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import session_scope
-from ..models import Bar, Instrument
+from ..models import Bar, Instrument, Quote
 from ..sources import MoexSource
 from ..sources.base import rows_to_dicts, to_date, to_float, to_int
 from ..sources.moex import BOARD_SPECS
@@ -55,6 +55,11 @@ class Param:
     agg: str = "avg"
     #: Показывать по умолчанию
     default: bool = False
+    #: Значение не из истории торгов, а рассчитывается отдельно и одинаково
+    #: для всех строк бумаги — сворачивать за период его не нужно
+    computed: bool = False
+    #: Пояснение для интерфейса
+    hint: str = ""
 
 
 PARAMS: tuple[Param, ...] = (
@@ -71,8 +76,13 @@ PARAMS: tuple[Param, ...] = (
     Param("turnover", "Оборот, ₽", "Объёмы", "turnover", digits=2, agg="sum", default=True),
     Param("num_trades", "Число сделок", "Объёмы", "num_trades", digits=0, agg="sum"),
     # Облигационные
-    Param("accrued_interest", "НКД", "Облигации", "accrued_interest",
-          digits=2, agg="last", default=True),
+    Param("accrued_interest", "НКД на дату торгов", "Облигации", "accrued_interest",
+          digits=2, agg="last", default=True,
+          hint="Как публиковала биржа в тот торговый день"),
+    Param("accrued_today", "НКД на сегодня", "Облигации", "",
+          digits=2, agg="last", computed=True,
+          hint="Расчёт по графику купонов на текущую дату, в рублях расчётов; "
+               "одинаков для всех строк выпуска"),
     Param("yield_close", "Доходность к закрытию, %", "Облигации", "yield_close", agg="avg"),
     Param("yield_at_wap", "Доходность к СВЦ, %", "Облигации", "yield_at_wap", agg="avg"),
     Param("duration_days", "Дюрация, дней", "Облигации", "duration_days",
@@ -98,7 +108,12 @@ def parameter_catalog() -> list[dict[str, Any]]:
     groups: dict[str, list[dict[str, Any]]] = {}
     for param in PARAMS:
         groups.setdefault(param.group, []).append(
-            {"code": param.code, "title": param.title, "default": param.default}
+            {
+                "code": param.code,
+                "title": param.title,
+                "default": param.default,
+                "hint": param.hint,
+            }
         )
     return [{"group": group, "items": items} for group, items in groups.items()]
 
@@ -395,8 +410,17 @@ def build_columns(codes: Sequence[str], mode: str) -> list[dict[str, Any]]:
         param = PARAMS_BY_CODE.get(code)
         if param is None:
             continue
-        if param.kind == "text":
-            columns.append({"code": param.code, "title": param.title, "kind": "text"})
+        # Расчётная величина одинакова для всех дней периода: сворачивать
+        # её нечего, и подпись «последн.» была бы неправдой
+        if param.kind == "text" or param.computed:
+            columns.append(
+                {
+                    "code": param.code,
+                    "title": param.title,
+                    "kind": param.kind,
+                    "digits": param.digits,
+                }
+            )
             continue
         if param.agg == "minmax_avg":
             for suffix, label in (("avg", "средн."), ("min", "мин"), ("max", "макс")):
@@ -424,11 +448,64 @@ def _row_identity(item: Resolved) -> dict[str, Any]:
     return {"secid": item.secid, "isin": item.isin, "name": item.name}
 
 
+def _computed_values(item: Resolved, codes: Sequence[str]) -> dict[str, Any]:
+    """Величины, которые считаются по бумаге, а не по дню торгов.
+
+    Сейчас это НКД на сегодня: биржа публикует его только на дату расчётов, а
+    в истории торгов лежит НКД того дня, к которому относится строка. Обе
+    величины нужны, поэтому они живут отдельными параметрами.
+
+    Значение отдаём в рублях расчётов — в тех же деньгах, в которых биржа
+    публикует НКД в истории. Иначе у замещающего выпуска соседние колонки
+    оказались бы в разных валютах: 1149 ₽ против 15 $.
+    """
+    if "accrued_today" not in codes or item.kind != "bond":
+        return {}
+
+    from .accrual import accrual_profile
+
+    with session_scope() as session:
+        instrument = session.execute(
+            select(Instrument).where(
+                Instrument.secid == item.secid, Instrument.board == item.board
+            )
+        ).scalar_one_or_none()
+        if instrument is None:
+            return {}
+
+        # Биржевой НКД нужен для выпусков с плавающим купоном: у них ставка
+        # периода не объявлена, и купон восстанавливается из него
+        quote = session.execute(
+            select(Quote)
+            .where(Quote.instrument_id == instrument.id)
+            .order_by(Quote.ts.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+        profile = accrual_profile(
+            session,
+            instrument,
+            exchange_value=quote.accrued_interest if quote else None,
+            settle_date=quote.settle_date if quote else None,
+        )
+        today_row = profile["today"]
+        return {"accrued_today": today_row["value_rub"] if today_row else None}
+
+
 def build_rows(
-    item: Resolved, bars: Sequence[dict[str, Any]], codes: Sequence[str], mode: str
+    item: Resolved,
+    bars: Sequence[dict[str, Any]],
+    codes: Sequence[str],
+    mode: str,
+    computed: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    """Развернуть историю бумаги в строки результата."""
+    """Развернуть историю бумаги в строки результата.
+
+    ``computed`` — значения, посчитанные не по истории, а по бумаге целиком
+    (например, НКД на сегодня). Они одинаковы во всех строках выпуска.
+    """
     params = [PARAMS_BY_CODE[code] for code in codes if code in PARAMS_BY_CODE]
+    computed = computed or {}
 
     if mode == "by_date":
         rows = []
@@ -436,7 +513,10 @@ def build_rows(
             row = _row_identity(item)
             row["trade_date"] = bar["trade_date"]
             for param in params:
-                row[param.code] = bar.get(param.field)
+                row[param.code] = (
+                    computed.get(param.code) if param.computed
+                    else bar.get(param.field)
+                )
             rows.append(row)
         return rows
 
@@ -446,6 +526,9 @@ def build_rows(
     row = _row_identity(item)
     row["days"] = len(bars)
     for param in params:
+        if param.computed:
+            row[param.code] = computed.get(param.code)
+            continue
         values = [bar.get(param.field) for bar in bars]
         if param.kind == "text":
             text_values = [value for value in values if value]
@@ -508,7 +591,9 @@ async def run_query(
         if not bars:
             no_data.append(item.query)
             continue
-        rows.extend(build_rows(item, bars, codes, mode))
+        # Считаем после _persist: бумага уже в справочнике, и по ней доступны
+        # график купонов и последний срез
+        rows.extend(build_rows(item, bars, codes, mode, _computed_values(item, codes)))
         found.append(
             {
                 "query": item.query,

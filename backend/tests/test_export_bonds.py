@@ -106,6 +106,49 @@ class TestBuildTable:
     def test_summary_of_empty_history(self):
         assert export_service.build_rows(self.ITEM, [], ["wa_price"], "summary") == []
 
+    def test_accrued_today_repeats_in_every_row(self):
+        """НКД на сегодня один для всей бумаги, а не свой на каждый день."""
+        rows = export_service.build_rows(
+            self.ITEM, self.BARS, ["accrued_interest", "accrued_today"], "by_date",
+            {"accrued_today": 1231.93},
+        )
+        assert [row["accrued_today"] for row in rows] == [1231.93, 1231.93]
+        # НКД дня остаётся своим у каждой строки
+        assert [row["accrued_interest"] for row in rows] == [1133.0, 1148.0]
+
+    def test_accrued_today_is_not_aggregated(self):
+        """Сворачивать расчётную величину нечего — она и так одна."""
+        rows = export_service.build_rows(
+            self.ITEM, self.BARS, ["accrued_today"], "summary",
+            {"accrued_today": 1231.93},
+        )
+        assert rows[0]["accrued_today"] == 1231.93
+
+    def test_accrued_today_without_value_is_empty(self):
+        """Если купоны неизвестны, честнее пусто, чем ноль."""
+        rows = export_service.build_rows(
+            self.ITEM, self.BARS, ["accrued_today"], "by_date", {}
+        )
+        assert rows[0]["accrued_today"] is None
+
+    def test_accrued_today_column_has_no_aggregation_suffix(self):
+        """В своде подпись «на конец» была бы неправдой."""
+        columns = export_service.build_columns(
+            ["accrued_interest", "accrued_today"], "summary"
+        )
+        titles = {column["code"]: column["title"] for column in columns}
+        assert titles["accrued_today"] == "НКД на сегодня"
+        assert titles["accrued_interest"].startswith("НКД на дату торгов,")
+
+    def test_accrued_today_offered_in_catalog(self):
+        catalog = export_service.parameter_catalog()
+        bonds = next(group for group in catalog if group["group"] == "Облигации")
+        codes = {item["code"] for item in bonds["items"]}
+        assert {"accrued_interest", "accrued_today"} <= codes
+        # Подсказка обязана объяснять, чем колонки отличаются
+        today = next(i for i in bonds["items"] if i["code"] == "accrued_today")
+        assert today["hint"]
+
     def test_columns_match_mode(self):
         by_date = export_service.build_columns(["wa_price"], "by_date")
         assert [column["code"] for column in by_date] == [

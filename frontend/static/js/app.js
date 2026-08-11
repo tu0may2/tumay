@@ -961,7 +961,7 @@
           <div class="param-group">
             <div class="param-group__title">${fmt.esc(group.group)}</div>
             ${group.items.map((item) => `
-              <label class="check">
+              <label class="check"${item.hint ? ` title="${fmt.esc(item.hint)}"` : ''}>
                 <input type="checkbox" value="${fmt.esc(item.code)}" ${item.default ? 'checked' : ''}>
                 <span>${fmt.esc(item.title)}</span>
               </label>`).join('')}
