@@ -1,0 +1,25 @@
+[Unit]
+Description=Казначейский терминал
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=treasury
+Group=treasury
+WorkingDirectory=/opt/treasury/backend
+# .env в этой папке подхватывается автоматически (см. app/config.py) —
+# отдельно прокидывать TREASURY_AUTH_ENABLED и TREASURY_ADMIN_PASSWORD не нужно
+ExecStart=/opt/treasury/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+# Сервер переживает разрыв SSH-сессии и переживёт перезагрузку ВМ (см. enable ниже)
+
+# Небольшая песочница: сервис не может писать за пределы своей папки,
+# кроме базы — это единственное, что ему нужно менять на диске
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/treasury/backend
+
+[Install]
+WantedBy=multi-user.target
