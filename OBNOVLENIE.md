@@ -20,9 +20,14 @@
 **Первоначальная настройка (один раз).** Подключитесь по SSH и выполните:
 
 ```
-sudo apt-get install -y git
-sudo -u treasury git clone https://github.com/tu0may2/tumay.git /opt/treasury/src
+sudo apt-get update
+sudo apt-get install -y git rsync
+sudo git clone https://github.com/tu0may2/tumay.git /opt/treasury/src
 ```
+
+Клон делаем от root — это просто папка с исходным кодом, из которой файлы
+потом копируются в рабочие места; сама она не запускается и правами
+пользователя `treasury` владеть не обязана.
 
 Дальше связываем клон с рабочей папкой. Терминал ожидает, что `backend` и
 `frontend` лежат рядом, поэтому переносим оба:
@@ -32,13 +37,13 @@ sudo rsync -a --delete \
   --exclude 'treasury.db*' --exclude '.env' --exclude '.venv' --exclude '__pycache__' \
   /opt/treasury/src/backend/ /opt/treasury/backend/
 sudo rsync -a --delete /opt/treasury/src/frontend/ /opt/treasury/frontend/
-sudo chown -R treasury:treasury /opt/treasury
+sudo chown -R treasury:treasury /opt/treasury/backend
 ```
 
 **Каждое следующее обновление — эти три команды:**
 
 ```
-sudo -u treasury git -C /opt/treasury/src pull
+sudo git -C /opt/treasury/src pull
 sudo bash /opt/treasury/src/backend/deploy/setup.sh /opt/treasury/src/backend
 sudo rsync -a --delete /opt/treasury/src/frontend/ /opt/treasury/frontend/
 ```
@@ -77,7 +82,7 @@ sudo systemctl restart treasury
 Откат к предыдущей версии — одна команда, если настроен способ А:
 
 ```
-sudo -u treasury git -C /opt/treasury/src checkout HEAD~1
+sudo git -C /opt/treasury/src checkout HEAD~1
 sudo bash /opt/treasury/src/backend/deploy/setup.sh /opt/treasury/src/backend
 ```
 
