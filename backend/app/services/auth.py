@@ -137,6 +137,19 @@ def logout(session: Session, token: str) -> None:
         session.commit()
 
 
+def drop_sessions(session: Session, user_id: int) -> int:
+    """Закрыть все входы пользователя — после смены пароля старые недействительны."""
+    records = list(
+        session.execute(
+            select(Session_).where(Session_.user_id == user_id)
+        ).scalars()
+    )
+    for record in records:
+        session.delete(record)
+    session.commit()
+    return len(records)
+
+
 def current_user(
     x_auth_token: str | None = Header(None, alias="X-Auth-Token"),
     session: Session = Depends(get_session),

@@ -337,7 +337,7 @@
       : 'нет данных';
 
     renderCurve(overview.curve);
-    renderRatesChart();
+    renderSeriesCharts();
     renderMovers();
     renderTopLiquid();
   }
@@ -370,10 +370,13 @@
 
   function renderCurve(curve) {
     const container = $('#curve-chart');
+    // Запоминаем срез: он же перерисовывается при переходе в полный экран
+    if (curve) state.lastCurve = curve;
     if (!curve || !curve.points || !curve.points.length) {
       return charts.empty(container, 'Кривая не загружена');
     }
     $('#curve-date').textContent = `на ${fmt.date(curve.curve_date)}`;
+    bindStaticFullscreen();
 
     charts.lineChart(
       container,
@@ -387,7 +390,7 @@
         })),
       }],
       {
-        height: 220,
+        height: $('#card-curve').classList.contains('card--full') ? 520 : 220,
         yFormat: (v) => fmt.num(v, 1) + '%',
         xFormat: (v) => (v < 1 ? `${v}` : `${Math.round(v)}л`),
         dots: true,
@@ -395,38 +398,229 @@
     );
   }
 
-  async function renderRatesChart() {
-    const container = $('#rates-chart');
-    try {
-      const [keyRate, ruonia] = await Promise.all([
-        api.rates({ code: 'KEY_RATE', days: 365 }),
-        api.rates({ code: 'RUONIA', days: 365 }),
-      ]);
+  // ------------------------------------------------------------------
+  // Карточки графиков обзора рынка
+  // ------------------------------------------------------------------
+  //
+  // Каждая карточка живёт по одному сценарию: период → набор показателей →
+  // перерисовка. Описание берётся с сервера (/api/series/catalog), поэтому
+  // новый график добавляется одной записью в каталоге, без правок здесь.
 
-      const toPoints = (rows) =>
-        rows.map((row) => ({
-          x: new Date(row.date).getTime(),
-          y: row.value,
-          label: `${fmt.date(row.date)}: ${fmt.pct(row.value)}`,
-        }));
+  /** Готовые периоды. Пустой from означает «с начала данных». */
+  const CHART_PERIODS = [
+    { code: '1m', title: '1 мес', days: 30 },
+    { code: '3m', title: '3 мес', days: 90 },
+    { code: '6m', title: '6 мес', days: 180 },
+    { code: '12m', title: '12 мес', days: 365 },
+    { code: '3y', title: '3 года', days: 1095 },
+  ];
 
-      charts.lineChart(
-        container,
-        [
-          { name: 'Ключевая ставка', color: themeColor('--accent', '#3f9d6d'), points: toPoints(keyRate) },
-          { name: 'RUONIA', color: themeColor('--warn', '#d9a441'), points: toPoints(ruonia) },
-        ],
-        {
-          height: 220,
-          area: false,
-          yFormat: (v) => fmt.num(v, 1) + '%',
-          xFormat: (v) => fmt.dateShort(new Date(v)),
-          emptyMessage: 'Ставки не загружены',
-        }
-      );
-    } catch (error) {
-      failure(container, error);
+  /** Состояние карточек: выбранный период и включённые показатели. */
+  const chartState = new Map();
+
+  function isoDate(date) {
+    return date.toISOString().slice(0, 10);
+  }
+
+  function periodRange(state) {
+    if (state.period === 'custom') {
+      return { date_from: state.from || null, date_to: state.to || null };
     }
+    const preset = CHART_PERIODS.find((item) => item.code === state.period)
+      || CHART_PERIODS[3];
+    const to = new Date();
+    const from = new Date();
+    from.setDate(from.getDate() - preset.days);
+    return { date_from: isoDate(from), date_to: isoDate(to) };
+  }
+
+  /** Разметка карточки: шапка, период, показатели и место под график. */
+  function chartShell(card, spec, state) {
+    const range = periodRange(state);
+    const periods = CHART_PERIODS.map((item) =>
+      `<button class="btn btn--sm${state.period === item.code ? ' btn--primary' : ''}"
+               data-period="${item.code}" type="button">${item.title}</button>`
+    ).join('');
+
+    // Показатели показываем только там, где есть из чего выбирать
+    const metrics = spec.metrics.length > 1
+      ? `<div class="chart-metrics">${spec.metrics.map((metric, index) => `
+          <label class="chart-metrics__item">
+            <input type="checkbox" data-metric="${metric.code}"
+                   ${state.metrics.includes(metric.code) ? 'checked' : ''}>
+            <span class="chart-metrics__dot" style="background:${charts.seriesColor(index)}"></span>
+            <span>${fmt.esc(metric.title)}${metric.kind === 'bar' ? ' ▮' : ''}</span>
+          </label>`).join('')}</div>`
+      : '';
+
+    card.innerHTML = `
+      <header class="card__head">
+        <h2>${fmt.esc(spec.title)}</h2>
+        <div class="card__tools">
+          <button class="btn btn--sm" data-action="xlsx" type="button">Excel</button>
+          <button class="btn btn--sm" data-action="full" type="button" title="На весь экран">⛶</button>
+        </div>
+      </header>
+      <div class="chart-controls">
+        ${periods}
+        <button class="btn btn--sm${state.period === 'custom' ? ' btn--primary' : ''}"
+                data-period="custom" type="button">Период</button>
+        <span class="chart-controls__dates">
+          <input type="date" data-role="from" value="${range.date_from || ''}">
+          <input type="date" data-role="to" value="${range.date_to || ''}">
+        </span>
+      </div>
+      ${metrics}
+      <div class="card__body" data-role="canvas"></div>
+      <p class="card__note">${fmt.esc(spec.note || '')}</p>`;
+  }
+
+  async function drawChartCard(card, spec, state) {
+    const canvas = card.querySelector('[data-role="canvas"]');
+    const params = Object.assign({ metric: state.metrics }, periodRange(state));
+    try {
+      const data = await api.series(spec.code, params);
+      const series = data.series.map((serie, index) => ({
+        code: serie.code,
+        title: serie.title,
+        kind: serie.kind,
+        unit: serie.unit,
+        digits: serie.digits,
+        // Цвет закреплён за позицией показателя в каталоге, а не за порядком
+        // в ответе: иначе он менялся бы при включении и выключении галочек
+        color: charts.seriesColor(
+          spec.metrics.findIndex((metric) => metric.code === serie.code)
+        ),
+        points: serie.points.map((point) => ({
+          x: new Date(point.date).getTime(),
+          y: point.value,
+        })),
+      }));
+
+      charts.timeSeriesChart(canvas, series, {
+        height: card.classList.contains('card--full') ? 520 : 260,
+        emptyMessage: 'За выбранный период данных нет',
+      });
+    } catch (error) {
+      failure(canvas, error);
+    }
+  }
+
+  function mountChartCard(card, spec) {
+    const state = chartState.get(spec.code) || {
+      period: '12m',
+      from: null,
+      to: null,
+      metrics: spec.metrics.filter((metric) => metric.default).map((metric) => metric.code),
+    };
+    chartState.set(spec.code, state);
+
+    const redraw = () => {
+      chartShell(card, spec, state);
+      drawChartCard(card, spec, state);
+    };
+
+    card.addEventListener('click', (event) => {
+      const periodButton = event.target.closest('[data-period]');
+      if (periodButton) {
+        state.period = periodButton.dataset.period;
+        if (state.period === 'custom') {
+          // Заполняем поля текущим окном, чтобы было от чего оттолкнуться
+          const range = periodRange({ period: '12m' });
+          state.from = state.from || range.date_from;
+          state.to = state.to || range.date_to;
+        }
+        return redraw();
+      }
+
+      const action = event.target.closest('[data-action]');
+      if (!action) return;
+      if (action.dataset.action === 'full') {
+        toggleFullscreen(card, () => drawChartCard(card, spec, state));
+      } else if (action.dataset.action === 'xlsx') {
+        api.seriesDownload(spec.code, Object.assign({ metric: state.metrics }, periodRange(state)))
+          .then((name) => toast(`Сохранено: ${name}`))
+          .catch((error) => toast(error.message, true));
+      }
+    });
+
+    card.addEventListener('change', (event) => {
+      const metric = event.target.closest('[data-metric]');
+      if (metric) {
+        const code = metric.dataset.metric;
+        state.metrics = metric.checked
+          ? [...state.metrics, code]
+          : state.metrics.filter((item) => item !== code);
+        return drawChartCard(card, spec, state);
+      }
+      const dateInput = event.target.closest('[data-role="from"], [data-role="to"]');
+      if (dateInput) {
+        // Вторую границу подставляем из текущего окна: иначе после правки
+        // одной даты второе поле осталось бы пустым и период выглядел бы
+        // незаданным, хотя сервер молча взял бы значение по умолчанию
+        const range = periodRange(state);
+        state.from = state.from || range.date_from;
+        state.to = state.to || range.date_to;
+        state[dateInput.dataset.role] = dateInput.value || null;
+        state.period = 'custom';
+        return redraw();
+      }
+    });
+
+    redraw();
+  }
+
+  /** Развернуть карточку на весь экран и обратно. */
+  function toggleFullscreen(card, onChange) {
+    const full = card.classList.toggle('card--full');
+    document.body.classList.toggle('has-full-card', full);
+    if (full) {
+      const escape = (event) => {
+        if (event.key !== 'Escape') return;
+        document.removeEventListener('keydown', escape);
+        card.classList.remove('card--full');
+        document.body.classList.remove('has-full-card');
+        if (onChange) onChange();
+      };
+      document.addEventListener('keydown', escape);
+    }
+    if (onChange) onChange();
+  }
+
+  /** Кнопки «на весь экран» у карточек, которые рисуются не по каталогу. */
+  function bindStaticFullscreen() {
+    $$('[data-fullscreen]').forEach((button) => {
+      if (button.dataset.bound) return;
+      button.dataset.bound = '1';
+      button.addEventListener('click', () => {
+        const card = document.getElementById(button.dataset.fullscreen);
+        if (card) toggleFullscreen(card, () => renderCurve(state.lastCurve));
+      });
+    });
+  }
+
+  let seriesCatalog = null;
+
+  async function renderSeriesCharts() {
+    const cards = $$('.chart-card');
+    if (!cards.length) return;
+    try {
+      if (!seriesCatalog) seriesCatalog = await api.seriesCatalog();
+    } catch (error) {
+      cards.forEach((card) => failure(card, error));
+      return;
+    }
+    cards.forEach((card) => {
+      const spec = seriesCatalog.find((item) => item.code === card.dataset.chart);
+      if (!spec) return;
+      // Обработчики вешаются один раз: карточка перерисовывает себя сама
+      if (card.dataset.mounted) {
+        const state = chartState.get(spec.code);
+        return void drawChartCard(card, spec, state);
+      }
+      card.dataset.mounted = '1';
+      mountChartCard(card, spec);
+    });
   }
 
   async function renderMovers() {
@@ -632,7 +826,6 @@
         },
         { title: 'Премия', className: 'num', render: (row) => premiumCell(row.spread_to_curve_bp) },
         { title: 'Дюрация', className: 'num', render: (row) => (fmt.isNum(row.duration_years) ? fmt.num(row.duration_years, 2) + ' л' : '—') },
-        { title: 'Купон', className: 'num', render: (row) => fmt.pct(row.coupon_percent) },
         { title: 'Тип купона', render: (row) => `<span class="badge">${fmt.esc(row.coupon_type_title || '—')}</span>` },
         { title: 'Аморт.', render: (row) => (row.has_amortization ? '<span class="badge badge--accent">да</span>' : '<span class="dim">нет</span>') },
         { title: 'Оферта', render: (row) => (row.has_offer ? `<span class="badge badge--warn">${row.offer_date ? fmt.date(row.offer_date) : 'есть'}</span>` : '<span class="dim">нет</span>') },
@@ -2229,6 +2422,7 @@
     try {
       const users = await api.users();
       $('#user-form').hidden = false;
+      $('#password-form').hidden = false;
       renderTable(container, [
         { title: 'Логин', render: (row) => fmt.esc(row.login) },
         { title: 'Имя', render: (row) => `<span class="dim">${fmt.esc(row.full_name || '—')}</span>` },
@@ -2249,6 +2443,9 @@
       bindRemoval('#users-table', 'dropUser', api.disableUser, renderUsers, 'Доступ отключён');
     } catch (error) {
       $('#user-form').hidden = true;
+      // Свой пароль меняет любой вошедший, поэтому форму оставляем —
+      // прячем только если вход вообще выключен
+      $('#password-form').hidden = !state.authEnabled;
       denied(container, error);
     }
   }
@@ -2319,6 +2516,28 @@
       message.className = 'form-msg form-msg--ok';
       $('#user-form').reset();
       renderUsers();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  async function submitPassword(event) {
+    event.preventDefault();
+    const message = $('#password-msg');
+    const login = $('#p-login').value.trim();
+    try {
+      const result = await api.changePassword({
+        password: $('#p-password').value,
+        login: login || null,
+      });
+      message.textContent = `${result.detail}: ${result.login}`;
+      message.className = 'form-msg form-msg--ok';
+      $('#password-form').reset();
+      // Смена пароля закрывает все входы, включая текущий — предупреждаем
+      if (!login || login.toLowerCase() === (state.user && state.user.login)) {
+        toast('Пароль изменён. Войдите заново с новым паролем.');
+      }
     } catch (error) {
       message.textContent = error.message;
       message.className = 'form-msg form-msg--err';
@@ -3127,6 +3346,7 @@
 
     // Настройки
     on('#user-form', 'submit', submitUser);
+    on('#password-form', 'submit', submitPassword);
     on('#rule-add', 'click', () => {
       const form = $('#rule-form');
       form.hidden = !form.hidden;

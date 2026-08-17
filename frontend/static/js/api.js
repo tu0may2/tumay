@@ -124,6 +124,10 @@
     calendar: (params) => request('/api/calendar', { params }),
     fx: (params) => request('/api/fx', { params }),
     rates: (params) => request('/api/rates', { params }),
+    seriesCatalog: () => request('/api/series/catalog'),
+    series: (chart, params) => request(`/api/series/${encodeURIComponent(chart)}`, { params }),
+    seriesDownload: (chart, params) =>
+      download(`/api/series/${encodeURIComponent(chart)}/download`, { params }),
     boards: () => request('/api/boards'),
     health: () => request('/api/health'),
     sources: () => request('/api/sources'),
@@ -214,6 +218,7 @@
     me: () => request('/api/auth/me'),
     users: () => request('/api/users'),
     createUser: (body) => request('/api/users', { method: 'POST', body }),
+    changePassword: (body) => request('/api/auth/password', { method: 'POST', body }),
     disableUser: (id) => request(`/api/users/${id}`, { method: 'DELETE' }),
     audit: (params) => request('/api/audit', { params }),
     notificationRules: () => request('/api/notifications'),

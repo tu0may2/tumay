@@ -121,8 +121,15 @@
         svg.appendChild(el('path', { class: 'chart__area', d: areaPath }));
       }
 
+      // Цвет задаём инлайновым стилем, а не атрибутом: правило .chart__line
+      // в таблице стилей перебивает атрибут stroke, и все серии слились бы
+      // в один цвет
       svg.appendChild(
-        el('path', { class: 'chart__line', d: path, stroke: serie.color || null })
+        el('path', {
+          class: 'chart__line',
+          d: path,
+          style: serie.color ? `stroke:${serie.color}` : null,
+        })
       );
 
       if (opts.dots || points.length <= 14) {
@@ -132,7 +139,7 @@
             cx: scaleX(p.x),
             cy: scaleY(p.y),
             r: 3,
-            fill: serie.color || null,
+            style: serie.color ? `fill:${serie.color}` : null,
           });
           dot.appendChild(el('title', {}, p.label || `${opts.xFormat(p.x)}: ${opts.yFormat(p.y)}`));
           svg.appendChild(dot);
@@ -170,6 +177,273 @@
         item.innerHTML =
           `<span class="legend__swatch" style="background:${serie.color || 'var(--accent)'}"></span>` +
           fmt.esc(serie.name || '');
+        legend.appendChild(item);
+      });
+      container.appendChild(legend);
+    }
+    return svg;
+  }
+
+  // --------------------------------------------------------------------
+  // График временных рядов с наведением
+  // --------------------------------------------------------------------
+
+  /** Палитра для серий: различима и в тёмной, и в светлой теме. */
+  const SERIES_COLORS = [
+    '#3f9d6d', '#d9a441', '#6bb6d8', '#c76ca0',
+    '#8f8ae0', '#d4744f', '#5aa9a0', '#a8a13c',
+  ];
+
+  function seriesColor(index) {
+    return SERIES_COLORS[index % SERIES_COLORS.length];
+  }
+
+  /** Значение для подсказки: миллиарды рублей не пишем всеми цифрами. */
+  function tipValue(value, serie) {
+    const digits = serie.digits ?? 2;
+    const text = Math.abs(value) >= 1e6 ? fmt.money(value, digits) : fmt.num(value, digits);
+    return serie.unit ? `${text} ${serie.unit}` : text;
+  }
+
+  /** Подпись даты: внутри года — день и месяц, на длинном периоде — месяц и год. */
+  function dateTickLabel(ms, spanDays) {
+    const d = new Date(ms);
+    if (spanDays > 400) {
+      return d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' });
+    }
+    if (spanDays > 60) {
+      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: 'short' });
+    }
+    return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+  }
+
+  /**
+   * Линии и столбцы на одном полотне с подсказкой при наведении.
+   *
+   * series: [{ code, title, kind: 'line'|'bar', color, unit, digits,
+   *            points: [{ x: миллисекунды, y: число }] }]
+   * Линии идут по левой оси, столбцы — по правой: у объёма и ставки
+   * разные размерности, на одной шкале ставка превратилась бы в прямую.
+   */
+  function timeSeriesChart(container, seriesList, options = {}) {
+    const opts = Object.assign({ height: 260, emptyMessage: 'Нет данных' }, options);
+
+    const active = (seriesList || []).filter((s) => s.points && s.points.length);
+    if (!active.length) return empty(container, opts.emptyMessage);
+
+    const lines = active.filter((s) => s.kind !== 'bar');
+    const bars = active.filter((s) => s.kind === 'bar');
+
+    container.innerHTML = '';
+    const frame = document.createElement('div');
+    frame.className = 'chart-frame';
+    container.appendChild(frame);
+
+    const svg = el('svg', {
+      class: 'chart',
+      viewBox: `0 0 ${VIEW_W} ${opts.height}`,
+      preserveAspectRatio: 'none',
+      height: opts.height,
+    });
+    frame.appendChild(svg);
+
+    const right = bars.length ? 58 : 14;
+    const geom = { left: 56, top: 12, w: VIEW_W - 56 - right, h: opts.height - 12 - 26 };
+
+    const allX = active.flatMap((s) => s.points.map((p) => p.x));
+    const xMin = Math.min(...allX);
+    const xMax = Math.max(...allX);
+    const spanDays = (xMax - xMin) / 86400000;
+    const scaleX = (x) =>
+      xMax === xMin ? geom.left + geom.w / 2 : geom.left + ((x - xMin) / (xMax - xMin)) * geom.w;
+
+    // Левая ось — по линиям, правая — по столбцам
+    const lineValues = lines.flatMap((s) => s.points.map((p) => p.y));
+    const leftBounds = lineValues.length
+      ? niceBounds(Math.min(...lineValues), Math.max(...lineValues))
+      : { min: 0, max: 1 };
+    const barMax = bars.length
+      ? Math.max(...bars.flatMap((s) => s.points.map((p) => p.y)), 0)
+      : 1;
+
+    const scaleLeft = (y) =>
+      geom.top + geom.h - ((y - leftBounds.min) / (leftBounds.max - leftBounds.min)) * geom.h;
+    const scaleBar = (y) => geom.top + geom.h - (y / (barMax || 1)) * geom.h;
+
+    const leftDigits = lines.length ? lines[0].digits ?? 2 : 2;
+    const leftUnit = lines.length ? lines[0].unit || '' : '';
+    drawGrid(svg, geom, leftBounds.min, leftBounds.max,
+      (v) => fmt.num(v, leftDigits > 2 ? 2 : leftDigits) + (leftUnit === '%' ? '%' : ''));
+
+    // Подписи правой оси — только края и середина, чтобы не спорили с левой
+    if (bars.length) {
+      for (let i = 0; i <= 2; i += 1) {
+        const value = (barMax / 2) * i;
+        svg.appendChild(
+          el('text', {
+            class: 'chart__axis',
+            x: geom.left + geom.w + 7,
+            y: scaleBar(value) + 3.5,
+            'text-anchor': 'start',
+          }, fmt.money(value, 0))
+        );
+      }
+    }
+
+    // Столбцы рисуем первыми — линии должны быть поверх
+    bars.forEach((serie, index) => {
+      const slotW = Math.max(1, geom.w / Math.max(serie.points.length, 1));
+      const width = Math.max(1, Math.min(slotW * (bars.length > 1 ? 0.4 : 0.75), 26));
+      const offset = bars.length > 1 ? (index - (bars.length - 1) / 2) * width : 0;
+      const color = serie.color || seriesColor(lines.length + index);
+      serie.points.forEach((p) => {
+        const y = scaleBar(p.y);
+        svg.appendChild(
+          el('rect', {
+            x: scaleX(p.x) - width / 2 + offset,
+            y,
+            width,
+            height: Math.max(1, geom.top + geom.h - y),
+            rx: 1,
+            style: `fill:${color};opacity:0.5`,
+          })
+        );
+      });
+    });
+
+    lines.forEach((serie, index) => {
+      const points = [...serie.points].sort((a, b) => a.x - b.x);
+      const color = serie.color || seriesColor(index);
+      const path = points
+        .map((p, i) => `${i === 0 ? 'M' : 'L'}${scaleX(p.x).toFixed(2)},${scaleLeft(p.y).toFixed(2)}`)
+        .join(' ');
+      svg.appendChild(
+        el('path', { class: 'chart__line', d: path, style: `stroke:${color}` })
+      );
+    });
+
+    // Подписи оси X
+    const ticks = Math.min(7, Math.max(2, Math.round(geom.w / 110)));
+    for (let i = 0; i <= ticks; i += 1) {
+      const x = geom.left + (geom.w * i) / ticks;
+      const value = xMin + ((xMax - xMin) * i) / ticks;
+      svg.appendChild(
+        el('text', {
+          class: 'chart__axis',
+          x,
+          y: opts.height - 8,
+          'text-anchor': i === 0 ? 'start' : i === ticks ? 'end' : 'middle',
+        }, dateTickLabel(value, spanDays))
+      );
+    }
+
+    // ---- Наведение: вертикаль, точки и подсказка «дата: значение» ----
+    // Прозрачность меняем атрибутом, поэтому и стартовое значение — атрибут:
+    // инлайновый style его перебил бы, и перекрестье не появилось бы
+    const hover = el('g', { style: 'pointer-events:none', opacity: '0' });
+    const rule = el('line', {
+      class: 'chart__rule', y1: geom.top, y2: geom.top + geom.h, x1: 0, x2: 0,
+    });
+    hover.appendChild(rule);
+    const markers = active.map((serie, index) =>
+      el('circle', {
+        r: 3.5,
+        style: `fill:${serie.color || seriesColor(index)}`,
+        class: 'chart__marker',
+      })
+    );
+    markers.forEach((marker) => hover.appendChild(marker));
+    svg.appendChild(hover);
+
+    const tip = document.createElement('div');
+    tip.className = 'chart-tip';
+    tip.hidden = true;
+    frame.appendChild(tip);
+
+    // Общая шкала дат: по ней ищем ближайшую точку под курсором
+    const stamps = [...new Set(allX)].sort((a, b) => a - b);
+    const byStamp = active.map((serie) => {
+      const map = new Map();
+      serie.points.forEach((p) => map.set(p.x, p.y));
+      return map;
+    });
+
+    function hide() {
+      hover.setAttribute('opacity', '0');
+      tip.hidden = true;
+    }
+
+    function move(event) {
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width) return;
+      // viewBox растянут по ширине контейнера — переводим пиксели в координаты
+      const localX = ((event.clientX - rect.left) / rect.width) * VIEW_W;
+      if (localX < geom.left - 4 || localX > geom.left + geom.w + 4) return hide();
+
+      const ratio = (localX - geom.left) / geom.w;
+      const target = xMin + ratio * (xMax - xMin);
+      let nearest = stamps[0];
+      let best = Infinity;
+      for (const stamp of stamps) {
+        const distance = Math.abs(stamp - target);
+        if (distance < best) { best = distance; nearest = stamp; }
+      }
+
+      const x = scaleX(nearest);
+      rule.setAttribute('x1', x);
+      rule.setAttribute('x2', x);
+
+      const rows = [];
+      active.forEach((serie, index) => {
+        const value = byStamp[index].get(nearest);
+        const marker = markers[index];
+        if (value === undefined || value === null) {
+          marker.setAttribute('opacity', '0');
+          return;
+        }
+        marker.setAttribute('opacity', '1');
+        marker.setAttribute('cx', x);
+        marker.setAttribute('cy', serie.kind === 'bar' ? scaleBar(value) : scaleLeft(value));
+        rows.push(
+          `<span class="chart-tip__row">
+             <span class="chart-tip__swatch" style="background:${serie.color || seriesColor(index)}"></span>
+             <span class="chart-tip__name">${fmt.esc(serie.title || serie.code)}</span>
+             <span class="chart-tip__value">${fmt.esc(tipValue(value, serie))}</span>
+           </span>`
+        );
+      });
+      if (!rows.length) return hide();
+
+      hover.setAttribute('opacity', '1');
+      tip.innerHTML =
+        `<div class="chart-tip__date">${fmt.date(new Date(nearest))}</div>${rows.join('')}`;
+      tip.hidden = false;
+
+      // Держим подсказку внутри карточки: у правого края разворачиваем влево
+      const px = (x / VIEW_W) * rect.width;
+      const width = tip.offsetWidth || 170;
+      tip.style.left = `${Math.max(4, Math.min(px + 14, rect.width - width - 4))}px`;
+      tip.style.top = '10px';
+    }
+
+    svg.addEventListener('mousemove', move);
+    svg.addEventListener('mouseleave', hide);
+    // На телефоне тем же жестом ведут палец по графику
+    svg.addEventListener('touchmove', (event) => {
+      if (event.touches && event.touches.length) move(event.touches[0]);
+    }, { passive: true });
+    svg.addEventListener('touchend', hide);
+
+    if (active.length > 1) {
+      const legend = document.createElement('div');
+      legend.className = 'legend';
+      active.forEach((serie, index) => {
+        const item = document.createElement('span');
+        item.className = 'legend__item';
+        item.innerHTML =
+          `<span class="legend__swatch" style="background:${serie.color || seriesColor(index)}"></span>` +
+          fmt.esc(serie.title || serie.code) +
+          (serie.kind === 'bar' ? ' <span class="legend__hint">(столбцы, правая ось)</span>' : '');
         legend.appendChild(item);
       });
       container.appendChild(legend);
@@ -465,5 +739,8 @@
     container.appendChild(wrap);
   }
 
-  global.charts = { lineChart, barChart, priceVolumeChart, scatterChart, barsHorizontal, empty };
+  global.charts = {
+    lineChart, barChart, timeSeriesChart, priceVolumeChart,
+    scatterChart, barsHorizontal, empty, seriesColor,
+  };
 })(window);

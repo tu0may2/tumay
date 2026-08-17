@@ -21,9 +21,10 @@ python -m pip install --quiet --disable-pip-version-check -r requirements.txt ||
 rem Вход обязателен: терминал будет доступен из интернета
 set TREASURY_AUTH_ENABLED=true
 
-rem Пароль администратора. Задайте свой и не оставляйте значение по умолчанию.
-rem Если убрать строку, пароль сгенерируется и напечатается здесь один раз.
-if "%TREASURY_ADMIN_PASSWORD%"=="" set TREASURY_ADMIN_PASSWORD=smenite-etot-parol
+rem Пароль администратора. Задаётся только при первом запуске — дальше он
+rem хранится в базе, и правка этой строки его не изменит: меняйте на вкладке
+rem «Настройки» → «Сменить пароль».
+if "%TREASURY_ADMIN_PASSWORD%"=="" set TREASURY_ADMIN_PASSWORD=1234567AI
 
 echo.
 echo ============================================================

@@ -374,7 +374,6 @@ ANALYSIS_COLUMNS: tuple[dict[str, Any], ...] = (
     {"code": "spread_to_curve_bp", "title": "Премия к КБД, бп", "kind": "number", "digits": 0},
     {"code": "z_spread_bp", "title": "Z-спред, бп", "kind": "number", "digits": 0},
     {"code": "duration_years", "title": "Дюрация, лет", "kind": "number", "digits": 2},
-    {"code": "coupon_percent", "title": "Купон, %", "kind": "number", "digits": 2},
     {"code": "coupon_type_title", "title": "Тип купона", "kind": "text"},
     {"code": "coupon_period", "title": "Период купона, дней", "kind": "number", "digits": 0},
     {"code": "next_coupon_date", "title": "Ближайший купон", "kind": "date"},

@@ -171,24 +171,59 @@ class Collector:
             return counter["rows"]
 
     async def collect_reference(self) -> int:
-        """Курсы ЦБ, ключевая ставка, RUONIA и кривая бескупонной доходности."""
+        """Курсы ЦБ, ключевая ставка, RUONIA и кривая бескупонной доходности.
+
+        Ряды тянем сразу за период ``macro_history_days``: графики обзора
+        рынка строятся по истории, а она иначе накапливалась бы по одному дню
+        за запуск и первый год выглядела бы пустой.
+        """
         total = 0
+        depth = timedelta(days=settings.macro_history_days)
+        since = date.today() - depth
+
         with self._run("cbr", "reference") as counter:
             async with CbrSource() as cbr:
-                fx, key_rate, ruonia = await asyncio.gather(
+                fx, key_rate, ruonia, ruonia_details, currency_ids = await asyncio.gather(
                     cbr.fetch_fx_rates(),
-                    cbr.fetch_key_rate(),
-                    cbr.fetch_ruonia(),
+                    cbr.fetch_key_rate(since),
+                    cbr.fetch_ruonia(since),
+                    cbr.fetch_ruonia_details(since),
+                    cbr.fetch_currency_ids(),
                     return_exceptions=True,
                 )
-            with session_scope() as session:
-                if not isinstance(fx, Exception):
-                    total += _upsert(
-                        session, FxRate, fx, ("source", "code", "rate_date"), ("value",)
+
+                fx_history: list[dict[str, Any]] = []
+                if not isinstance(currency_ids, Exception):
+                    histories = await asyncio.gather(
+                        *(
+                            cbr.fetch_fx_history(code, currency_ids[code], since)
+                            for code in settings.fx_history_codes
+                            if code in currency_ids
+                        ),
+                        return_exceptions=True,
                     )
+                    fx_history = [
+                        row
+                        for outcome in histories
+                        if not isinstance(outcome, Exception)
+                        for row in outcome
+                    ]
+
+            with session_scope() as session:
+                rates = [
+                    row
+                    for series in (fx, fx_history)
+                    if not isinstance(series, Exception)
+                    for row in series
+                ]
+                total += _upsert(
+                    session, FxRate, rates, ("source", "code", "rate_date"), ("value",)
+                )
+                # Подробности RUONIA идут последними: там та же ставка, что и в
+                # SOAP-ряду, и при совпадении дат побеждает более полный источник
                 macro = [
                     row
-                    for series in (key_rate, ruonia)
+                    for series in (key_rate, ruonia, ruonia_details)
                     if not isinstance(series, Exception)
                     for row in series
                 ]
@@ -528,9 +563,17 @@ def _history_targets(
         )
     ).all()
 
+    # У индексов нет оборота, поэтому в отбор по ликвидности они не попадают —
+    # а без их истории не построить график «Индекс МосБиржи» в обзоре рынка
+    indices = session.execute(
+        select(Instrument.id, Instrument.secid, Instrument.board).where(
+            Instrument.secid.in_(list(settings.tracked_indices))
+        )
+    ).all()
+
     seen: set[int] = set()
     result: list[tuple[int, str, str]] = []
-    for row in [tuple(item) for item in watched] + targets:
+    for row in [tuple(item) for item in watched + indices] + targets:
         if row[0] in seen:
             continue
         seen.add(row[0])

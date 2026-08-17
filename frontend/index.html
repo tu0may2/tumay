@@ -53,24 +53,26 @@
     <section class="view view--active" id="view-overview">
       <div class="kpi-grid" id="kpi-grid"></div>
 
-      <div class="grid grid--2">
-        <article class="card">
-          <header class="card__head">
-            <h2>Кривая бескупонной доходности</h2>
+      <article class="card" id="card-curve">
+        <header class="card__head">
+          <h2>Кривая бескупонной доходности</h2>
+          <div class="card__tools">
             <span class="card__hint" id="curve-date"></span>
-          </header>
-          <div class="card__body" id="curve-chart"></div>
-          <p class="card__note">Безрисковый ориентир: доходность ОФЗ по срокам. Премия корпоративной бумаги к этой кривой — мера кредитного риска.</p>
-        </article>
+            <button class="btn btn--sm" data-fullscreen="card-curve" type="button" title="На весь экран">⛶</button>
+          </div>
+        </header>
+        <div class="card__body" id="curve-chart"></div>
+        <p class="card__note">Безрисковый ориентир: доходность ОФЗ по срокам. Премия корпоративной бумаги к этой кривой — мера кредитного риска.</p>
+      </article>
 
-        <article class="card">
-          <header class="card__head">
-            <h2>Ключевая ставка и RUONIA</h2>
-            <span class="card__hint">за 12 месяцев</span>
-          </header>
-          <div class="card__body" id="rates-chart"></div>
-          <p class="card__note">Стоимость фондирования: ориентир для решения «размещать или занимать».</p>
-        </article>
+      <!-- Графики строятся по каталогу /api/series/catalog: период, набор
+           показателей, выгрузка и полный экран у всех устроены одинаково -->
+      <article class="card chart-card" id="chart-rates" data-chart="rates"></article>
+      <article class="card chart-card" id="chart-imoex" data-chart="imoex"></article>
+
+      <div class="grid grid--2">
+        <article class="card chart-card" id="chart-usd" data-chart="usd"></article>
+        <article class="card chart-card" id="chart-cny" data-chart="cny"></article>
       </div>
 
       <div class="grid grid--2">
@@ -739,6 +741,21 @@ SU26238RMFS4
             </div>
           </form>
           <div class="card__body table-wrap" id="users-table" style="max-height:280px"></div>
+
+          <form class="filters" id="password-form" hidden>
+            <label class="field">
+              <span>Чей пароль</span>
+              <input id="p-login" placeholder="свой — оставьте пустым">
+            </label>
+            <label class="field">
+              <span>Новый пароль</span>
+              <input id="p-password" type="password" required minlength="6" autocomplete="new-password">
+            </label>
+            <div class="deal-form__actions">
+              <button class="btn btn--sm" type="submit">Сменить пароль</button>
+              <span class="form-msg" id="password-msg"></span>
+            </div>
+          </form>
         </article>
 
         <article class="card">

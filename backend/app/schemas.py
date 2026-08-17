@@ -265,6 +265,15 @@ class UserCreate(BaseModel):
     full_name: str | None = Field(None, max_length=128)
 
 
+class PasswordChange(BaseModel):
+    """Смена пароля: себе — без логина, чужому — с логином (только админ)."""
+
+    password: str = Field(..., min_length=6, description="Новый пароль")
+    login: str | None = Field(
+        None, max_length=64, description="Чей пароль менять; по умолчанию свой"
+    )
+
+
 class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

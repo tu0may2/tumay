@@ -460,6 +460,85 @@ div.bond-pane[hidden] { display: none; }
 .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 9px; }
 .legend__item { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-dim); }
 .legend__swatch { width: 11px; height: 3px; border-radius: 2px; }
+.legend__hint { color: var(--text-mute); }
+
+/* Подсказка при наведении на график */
+.chart-frame { position: relative; }
+.chart__rule { stroke: var(--text-mute); stroke-width: 1; stroke-dasharray: 3 3; }
+.chart__marker { stroke: var(--bg-elev); stroke-width: 1.5; }
+
+.chart-tip {
+  position: absolute;
+  z-index: 5;
+  pointer-events: none;
+  min-width: 132px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+  font-size: 11.5px;
+}
+.chart-tip__date {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  margin-bottom: 5px;
+}
+.chart-tip__row { display: flex; align-items: center; gap: 7px; margin-top: 3px; }
+.chart-tip__swatch { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.chart-tip__name { color: var(--text-dim); flex: 1; }
+.chart-tip__value { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+
+/* Панель управления графиком: период, показатели, кнопки */
+.chart-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 11px;
+}
+.chart-controls__dates { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+.chart-controls__dates input {
+  padding: 4px 6px;
+  font-size: 11.5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-family: var(--mono);
+}
+.chart-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 14px;
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg-sunken);
+}
+.chart-metrics__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.chart-metrics__item input { accent-color: var(--accent); }
+.chart-metrics__dot { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+
+/* Полный экран: карточка накрывает страницу, график тянется по высоте */
+.card--full {
+  position: fixed;
+  inset: 12px;
+  z-index: 60;
+  margin: 0;
+  overflow: auto;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.4);
+}
+body.has-full-card { overflow: hidden; }
 
 .empty { padding: 26px 0; text-align: center; color: var(--text-mute); font-size: 13px; }
 

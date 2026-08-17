@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     reference_interval_sec: int = 3600
     # Глубина истории при первичной загрузке, дней
     history_depth_days: int = 180
+    # Глубина рядов ставок и курсов ЦБ: графики обзора строятся по ним
+    macro_history_days: int = 400
+    # Валюты, по которым тянем историю официального курса
+    fx_history_codes: tuple[str, ...] = ("USD", "CNY", "EUR")
+    # Индексы, история которых нужна для графиков обзора рынка
+    tracked_indices: tuple[str, ...] = ("IMOEX", "RGBI")
 
     # Какие рынки собираем: board -> описание
     shares_board: str = "TQBR"

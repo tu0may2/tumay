@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..models import Bar, CorpAction, FxRate, Instrument, MacroRate, Quote
-from ..services import accrual, analytics, intraday
+from ..services import accrual, analytics, intraday, series
+from ..services.tabular import to_csv, to_xlsx
 from ..sources.moex import BOARD_SPECS
 
 router = APIRouter(prefix="/api", tags=["Рынок"])
@@ -290,6 +293,83 @@ def get_rates(
         {"code": row.code, "name": row.name, "value": row.value, "date": row.rate_date}
         for row in rows
     ]
+
+
+@router.get("/series/catalog", summary="Каталог графиков обзора рынка")
+def get_series_catalog() -> list[dict[str, Any]]:
+    """Какие графики есть и какие показатели можно на них включить."""
+    return series.catalog()
+
+
+@router.get("/series/{chart}", summary="Данные графика за период")
+def get_series(
+    chart: str,
+    metric: list[str] | None = Query(None, description="Коды показателей графика"),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Ряды выбранных показателей. По умолчанию — за последние 12 месяцев."""
+    try:
+        return series.build(session, chart, metric, date_from, date_to)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
+@router.get("/series/{chart}/download", summary="Выгрузить данные графика")
+def download_series(
+    chart: str,
+    metric: list[str] | None = Query(None),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    fmt: Literal["xlsx", "csv"] = Query("xlsx"),
+    session: Session = Depends(get_session),
+) -> Response:
+    """Те же ряды, что на графике, но файлом для Excel."""
+    try:
+        data = series.build(session, chart, metric, date_from, date_to)
+    except LookupError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+    columns, rows = series.to_table(data)
+    if not rows:
+        raise HTTPException(
+            status_code=404, detail="За выбранный период данных нет — выгружать нечего"
+        )
+
+    stem = (
+        f"{data['title']} {data['date_from']:%d.%m.%Y}-{data['date_to']:%d.%m.%Y}"
+    ).replace("/", "-")
+
+    if fmt == "csv":
+        content = to_csv(columns, rows)
+        media_type = "text/csv; charset=utf-8"
+        filename = f"{stem}.csv"
+    else:
+        content = to_xlsx(
+            columns,
+            rows,
+            sheet_title=data["title"],
+            meta=[
+                (
+                    "Период",
+                    f"{data['date_from']:%d.%m.%Y} — {data['date_to']:%d.%m.%Y}",
+                ),
+                ("Источник", "Банк России, Московская биржа"),
+                ("Сформировано", date.today().strftime("%d.%m.%Y")),
+            ],
+        )
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        filename = f"{stem}.xlsx"
+
+    disposition = f"attachment; filename*=UTF-8''{quote(filename)}"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": disposition},
+    )
 
 
 @router.get("/boards", summary="Доступные режимы торгов")

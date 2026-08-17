@@ -17,6 +17,7 @@ from ..schemas import (
     LoginRequest,
     NotificationRuleCreate,
     NotificationRuleRead,
+    PasswordChange,
     UserCreate,
     UserRead,
 )
@@ -75,6 +76,34 @@ def logout(
 @router.get("/auth/me", summary="Текущий пользователь")
 def me(user: dict = Depends(require_viewer)) -> dict[str, Any]:
     return {**user, "role_title": auth_service.ROLE_TITLES.get(user["role"], user["role"])}
+
+
+@router.post("/auth/password", summary="Сменить пароль")
+def change_password(
+    payload: PasswordChange,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_viewer),
+) -> dict[str, Any]:
+    """Свой пароль меняет любой вошедший, чужой — только администратор."""
+    target_login = (payload.login or user["login"]).strip().lower()
+    if target_login != user["login"] and user["role"] != "admin":
+        raise HTTPException(
+            status_code=403, detail="Чужой пароль может менять только администратор"
+        )
+
+    target = session.execute(
+        select(User).where(User.login == target_login)
+    ).scalar_one_or_none()
+    if target is None:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+
+    target.password_hash = auth_service.hash_password(payload.password)
+    # Старые сессии больше не действуют: сменивший пароль ожидает,
+    # что прежний доступ закрылся
+    auth_service.drop_sessions(session, target.id)
+    audit(session, user, action="update", entity="user", entity_id=target.id,
+          detail=f"смена пароля {target.login}")
+    return {"login": target.login, "detail": "Пароль изменён"}
 
 
 @router.get("/users", response_model=list[UserRead], summary="Пользователи")

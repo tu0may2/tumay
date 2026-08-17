@@ -146,3 +146,103 @@ def test_audit_is_admin_only(guarded_client):
 
     assert guarded_client.get("/api/audit", headers=headers).status_code == 403
     assert guarded_client.get("/api/users", headers=headers).status_code == 403
+
+
+class TestPasswordChange:
+    """Смена пароля: себе можно всем, чужой — только администратору."""
+
+    def _token(self, client, login, password):
+        return client.post(
+            "/api/auth/login", json={"login": login, "password": password}
+        ).json()["token"]
+
+    def test_user_changes_own_password(self, guarded_client):
+        from app.db import session_scope
+        from app.services.auth import create_user
+
+        with session_scope() as session:
+            create_user(session, login="kaznachei", password="staryi-parol")
+
+        token = self._token(guarded_client, "kaznachei", "staryi-parol")
+        response = guarded_client.post(
+            "/api/auth/password",
+            headers={"X-Auth-Token": token},
+            json={"password": "novyi-parol"},
+        )
+        assert response.status_code == 200
+
+        # Новый пароль работает, старый — нет
+        assert guarded_client.post(
+            "/api/auth/login",
+            json={"login": "kaznachei", "password": "novyi-parol"},
+        ).status_code == 200
+        assert guarded_client.post(
+            "/api/auth/login",
+            json={"login": "kaznachei", "password": "staryi-parol"},
+        ).status_code == 401
+
+    def test_old_sessions_stop_working(self, guarded_client):
+        """Сменивший пароль вправе считать, что прежний доступ закрыт."""
+        from app.db import session_scope
+        from app.services.auth import create_user
+
+        with session_scope() as session:
+            create_user(session, login="byvshii", password="parol-byvshego")
+
+        token = self._token(guarded_client, "byvshii", "parol-byvshego")
+        guarded_client.post(
+            "/api/auth/password",
+            headers={"X-Auth-Token": token},
+            json={"password": "drugoi-parol"},
+        )
+        assert guarded_client.get(
+            "/api/auth/me", headers={"X-Auth-Token": token}
+        ).status_code == 401
+
+    def test_viewer_cannot_change_someone_elses_password(self, guarded_client):
+        from app.db import session_scope
+        from app.services.auth import create_user
+
+        with session_scope() as session:
+            create_user(session, login="chuzhoi", password="chuzhoi-parol")
+            create_user(session, login="lyubopytnyi", password="parol-lyubopytnogo")
+
+        token = self._token(guarded_client, "lyubopytnyi", "parol-lyubopytnogo")
+        response = guarded_client.post(
+            "/api/auth/password",
+            headers={"X-Auth-Token": token},
+            json={"login": "chuzhoi", "password": "vzlomannyi-parol"},
+        )
+        assert response.status_code == 403
+        # Пароль жертвы не тронут
+        assert guarded_client.post(
+            "/api/auth/login",
+            json={"login": "chuzhoi", "password": "chuzhoi-parol"},
+        ).status_code == 200
+
+    def test_admin_resets_password_for_anyone(self, guarded_client):
+        from app.db import session_scope
+        from app.services.auth import create_user
+
+        with session_scope() as session:
+            create_user(session, login="zabyvchivyi", password="zabytyi-parol")
+
+        token = self._token(guarded_client, "admin", "parol-administratora")
+        response = guarded_client.post(
+            "/api/auth/password",
+            headers={"X-Auth-Token": token},
+            json={"login": "zabyvchivyi", "password": "vydannyi-parol"},
+        )
+        assert response.status_code == 200
+        assert guarded_client.post(
+            "/api/auth/login",
+            json={"login": "zabyvchivyi", "password": "vydannyi-parol"},
+        ).status_code == 200
+
+    def test_short_password_is_rejected(self, guarded_client):
+        token = self._token(guarded_client, "admin", "parol-administratora")
+        assert guarded_client.post(
+            "/api/auth/password",
+            headers={"X-Auth-Token": token},
+            json={"password": "123"},
+        ).status_code == 422

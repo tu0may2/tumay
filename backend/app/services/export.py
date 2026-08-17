@@ -460,14 +460,23 @@ def _next_business_day(day: date) -> date:
 
 
 def _accrual_series(
-    item: Resolved, dates: Sequence[date], codes: Sequence[str]
+    item: Resolved,
+    dates: Sequence[date],
+    codes: Sequence[str],
+    bars: Sequence[dict[str, Any]] = (),
 ) -> dict[date, dict[str, Any]]:
     """НКД на каждую дату периода.
 
-    В истории торгов лежит НКД только за дни, когда были торги, — сегодняшнего
-    там нет вовсе, потому что итоги дня публикуются назавтра. Но купон
-    накапливается каждый день, поэтому расчётные значения заполняются на весь
-    выбранный период, включая выходные и сегодняшний день.
+    Источников два, и они дополняют друг друга:
+
+    * история торгов — там НКД датирован самим днём торгов и публикуется
+      биржей, то есть за прошедшие торговые дни это точное значение;
+    * расчёт по графику купонов — им закрываются выходные, праздники и
+      сегодняшний день, которых в истории нет.
+
+    Без первого источника у выпусков с плавающим купоном прошлые периоды
+    оставались бы пустыми: ставка тех периодов нигде не объявлена, и
+    восстановить её из одного лишь текущего среза невозможно.
 
     Значения отдаются в рублях расчётов — в тех же деньгах, в которых биржа
     публикует НКД в истории. Иначе у замещающего выпуска соседние колонки
@@ -514,12 +523,38 @@ def _accrual_series(
             multiplier = 1.0 if row.get("value_basis") == "settlement" else rate
             return round(row["value"] * multiplier, 2)
 
+        # Биржевой НКД за прошедшие торговые дни — он точнее любого расчёта
+        published = {
+            bar["trade_date"]: bar["accrued_interest"]
+            for bar in bars
+            if bar.get("trade_date") and bar.get("accrued_interest") is not None
+        }
+
         cache: dict[date, float | None] = {}
 
         def _cached(day: date) -> float | None:
             if day not in cache:
-                cache[day] = _value(day)
+                value = published.get(day)
+                cache[day] = round(value, 2) if value is not None else _value(day)
             return cache[day]
+
+        # Дни без торгов внутри прошедшего купонного периода: у выпуска с
+        # плавающим купоном ставка того периода нигде не объявлена, поэтому
+        # расчёт их не закрывает. Но внутри периода НКД растёт линейно —
+        # выходные восстанавливаются по соседним биржевым значениям
+        known = sorted(published)
+        for day in dates:
+            if _cached(day) is not None:
+                continue
+            step = _daily_step(published, known, day)
+            if step is None:
+                continue
+            base_day = max((d for d in known if d < day), default=None)
+            if base_day is None:
+                continue
+            cache[day] = round(
+                published[base_day] + step * (day - base_day).days, 2
+            )
 
         return {
             day: {
@@ -528,6 +563,27 @@ def _accrual_series(
             }
             for day in dates
         }
+
+
+def _daily_step(
+    published: dict[date, float], known: Sequence[date], day: date
+) -> float | None:
+    """Сколько НКД прибавляется за календарный день перед указанной датой.
+
+    Считается по двум последним торговым дням до ``day``, и только если НКД
+    между ними рос: падение означает выплату купона, а через границу периода
+    приращение не переносится.
+    """
+    earlier = [item for item in known if item < day]
+    if len(earlier) < 2:
+        return None
+
+    previous, last = earlier[-2], earlier[-1]
+    if published[last] <= published[previous]:
+        return None
+
+    days = (last - previous).days
+    return (published[last] - published[previous]) / days if days else None
 
 
 def date_range(date_from: date, date_to: date) -> list[date]:
@@ -665,7 +721,7 @@ async def run_query(
 
         # Считаем после _persist: бумага уже в справочнике, и по ней доступны
         # график купонов и последний срез
-        accrual = _accrual_series(item, period, codes)
+        accrual = _accrual_series(item, period, codes, bars)
         if not bars and not accrual:
             # Ни торгов, ни купонов — строки были бы пустыми
             continue

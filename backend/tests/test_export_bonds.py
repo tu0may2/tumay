@@ -217,6 +217,14 @@ class TestBuildTable:
             "settle_date", "accrued_basis",
         }
 
+    def test_analysis_table_has_no_coupon_column(self):
+        """В анализе облигаций ставка купона убрана — остался только его тип."""
+        from app.services import bonds as bonds_service
+
+        codes = {column["code"] for column in bonds_service.ANALYSIS_COLUMNS}
+        assert "coupon_percent" not in codes
+        assert "coupon_type_title" in codes
+
     def test_unknown_parameter_is_ignored(self):
         """Сохранённый отбор может ссылаться на убранный параметр."""
         rows = export_service.build_rows(
@@ -401,3 +409,57 @@ class TestAnalyse:
         items = bonds_service.analyse(session)["items"]
         prepared = bonds_service.rows_for_export(items)
         assert prepared[0]["has_amortization"] == "да"
+
+
+class TestAccrualSeries:
+    """НКД заполняется на каждый день периода, а не только на дни торгов."""
+
+    ITEM = Resolved(
+        query="RU000A10C5F9", secid="RU000A10C5F9", isin="RU000A10C5F9",
+        name="ЧеркизБ2Р2", board="TQCB", engine="stock", market="bonds", kind="bond",
+    )
+    # Понедельник — пятница: НКД растёт на 0,44 в день
+    BARS = [
+        {"trade_date": date(2026, 8, 10), "accrued_interest": 10.63},
+        {"trade_date": date(2026, 8, 11), "accrued_interest": 11.07},
+        {"trade_date": date(2026, 8, 12), "accrued_interest": 11.51},
+        {"trade_date": date(2026, 8, 13), "accrued_interest": 11.95},
+        {"trade_date": date(2026, 8, 14), "accrued_interest": 12.38},
+    ]
+
+    def _series(self, dates):
+        return export_service._accrual_series(
+            self.ITEM, dates, ["accrued_today", "accrued_settlement"], self.BARS
+        )
+
+    def test_trading_days_take_the_exchange_value(self):
+        """Опубликованный биржей НКД точнее расчёта — он и попадает в строку."""
+        series = self._series([date(2026, 8, 12)])
+        assert series[date(2026, 8, 12)]["accrued_today"] == 11.51
+
+    def test_settlement_looks_at_the_next_business_day(self):
+        series = self._series([date(2026, 8, 12)])
+        assert series[date(2026, 8, 12)]["accrued_settlement"] == 11.95
+
+    def test_weekend_is_filled_by_the_daily_step(self):
+        """Внутри купонного периода НКД растёт линейно — суббота считается."""
+        series = self._series([date(2026, 8, 15)])
+        # 12,38 плюс шаг 0,4375 — биржа в этот день не торгует
+        assert series[date(2026, 8, 15)]["accrued_today"] == pytest.approx(12.82, abs=0.01)
+
+    def test_step_is_not_carried_through_a_coupon_payment(self):
+        """После выплаты НКД падает: переносить приращение через границу нельзя."""
+        bars = self.BARS + [{"trade_date": date(2026, 8, 17), "accrued_interest": 0.44}]
+        series = export_service._accrual_series(
+            self.ITEM, [date(2026, 8, 18)],
+            ["accrued_today", "accrued_settlement"], bars,
+        )
+        # Шаг считается по 14.08 → 17.08, где НКД упал: приращение не выводится,
+        # и день закрывается расчётом по графику, а не экстраполяцией
+        assert series[date(2026, 8, 18)]["accrued_today"] != pytest.approx(12.82, abs=0.5)
+
+    def test_series_is_empty_without_the_requested_columns(self):
+        assert self._series([]) == {}
+        assert export_service._accrual_series(
+            self.ITEM, [date(2026, 8, 12)], ["wa_price"], self.BARS
+        ) == {}
