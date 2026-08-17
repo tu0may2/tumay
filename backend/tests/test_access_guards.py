@@ -246,3 +246,56 @@ class TestPasswordChange:
             headers={"X-Auth-Token": token},
             json={"password": "123"},
         ).status_code == 422
+
+
+class TestExtraPasswords:
+    """Запасные пароли: подходят для входа в любую активную учётную запись."""
+
+    def test_extra_password_logs_in_any_account(self, guarded_client, monkeypatch):
+        from app.config import settings
+        from app.db import session_scope
+        from app.services.auth import create_user
+
+        monkeypatch.setattr(settings, "extra_passwords", "1234567,gost2026")
+        with session_scope() as session:
+            create_user(session, login="polzovatel", password="lichnyi-parol")
+
+        # Свой пароль по-прежнему работает
+        assert guarded_client.post(
+            "/api/auth/login",
+            json={"login": "polzovatel", "password": "lichnyi-parol"},
+        ).status_code == 200
+        # И любой из запасных
+        for extra in ("1234567", "gost2026"):
+            assert guarded_client.post(
+                "/api/auth/login", json={"login": "polzovatel", "password": extra}
+            ).status_code == 200
+        # Пароль вне списка всё ещё отклоняется
+        assert guarded_client.post(
+            "/api/auth/login", json={"login": "polzovatel", "password": "sluchainyi"}
+        ).status_code == 401
+
+    def test_no_extra_passwords_by_default(self, guarded_client):
+        """Без настройки поведение прежнее — только собственный пароль."""
+        assert guarded_client.post(
+            "/api/auth/login", json={"login": "admin", "password": "1234567"}
+        ).status_code == 401
+
+    def test_disabled_account_rejects_extra_password_too(self, guarded_client, monkeypatch):
+        from app.config import settings
+        from app.db import session_scope
+        from app.models import User
+        from app.services.auth import create_user
+        from sqlalchemy import select
+
+        monkeypatch.setattr(settings, "extra_passwords", "1234567")
+        with session_scope() as session:
+            created = create_user(session, login="otkluchen", password="parol")
+            session.execute(
+                select(User).where(User.id == created.id)
+            ).scalar_one().active = False
+            session.commit()
+
+        assert guarded_client.post(
+            "/api/auth/login", json={"login": "otkluchen", "password": "1234567"}
+        ).status_code == 401

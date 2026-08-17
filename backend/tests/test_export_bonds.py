@@ -263,6 +263,13 @@ class TestFiles:
         # Пустое значение остаётся пустым, а не превращается в ноль
         assert sheet.cell(row=5, column=3).value is None
 
+    def test_sheet_title_strips_characters_excel_forbids(self, tmp_path):
+        """«USD / RUB» как есть роняет openpyxl: Excel не пускает / в имя листа."""
+        content = to_xlsx(self.COLUMNS, self.ROWS, sheet_title="USD / RUB")
+        path = tmp_path / "out.xlsx"
+        path.write_bytes(content)
+        assert load_workbook(path).active.title == "USD - RUB"
+
     def test_csv_is_excel_friendly(self):
         content = to_csv(self.COLUMNS, self.ROWS)
         text = content.decode("utf-8")

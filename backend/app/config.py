@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     admin_login: str = "admin"
     #: Если не задан, при первом запуске генерируется и печатается в журнал
     admin_password: str = ""
+    #: Запасные пароли: подходят для входа в любую учётную запись в дополнение
+    #: к её собственному паролю. Через запятую в одной строке, например
+    #: TREASURY_EXTRA_PASSWORDS=1234567,gost2026 — удобно, когда пароль нужно
+    #: сообщить нескольким людям и подбирать разный под каждого лень.
+    #: Строка, а не список: так поле пишется в .env без кавычек и JSON.
+    #: Менее безопасно, чем один пароль на человека — используйте осознанно.
+    extra_passwords: str = ""
     session_hours: int = 12
 
     # Налоги для расчёта доходности после налогообложения, %
@@ -84,6 +91,12 @@ class Settings(BaseSettings):
     @property
     def frontend_dir(self) -> Path:
         return BASE_DIR / "frontend"
+
+    @property
+    def extra_password_list(self) -> tuple[str, ...]:
+        return tuple(
+            item.strip() for item in self.extra_passwords.split(",") if item.strip()
+        )
 
 
 @lru_cache

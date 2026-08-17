@@ -95,13 +95,27 @@ def ensure_admin(session: Session) -> str | None:
     return password
 
 
+def _accepts(password: str, user: User) -> bool:
+    """Верен ли пароль: свой собственный или один из запасных.
+
+    Запасные пароли (``TREASURY_EXTRA_PASSWORDS``) подходят для входа в любую
+    активную учётную запись — придуманы для случаев, когда пароль нужно
+    сообщить нескольким людям сразу и заводить каждому отдельный лень.
+    """
+    if verify_password(password, user.password_hash):
+        return True
+    return any(
+        hmac.compare_digest(password, extra) for extra in settings.extra_password_list
+    )
+
+
 def login(session: Session, login_name: str, password: str) -> dict[str, Any]:
     """Проверить пару логин-пароль и выдать токен сессии."""
     user = session.execute(
         select(User).where(User.login == login_name.strip().lower())
     ).scalar_one_or_none()
 
-    if user is None or not user.active or not verify_password(password, user.password_hash):
+    if user is None or not user.active or not _accepts(password, user):
         # Не уточняем, что именно неверно: это подсказка для подбора
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
 

@@ -101,6 +101,12 @@ CHARTS: tuple[Chart, ...] = (
         metrics=(Metric("rate", "Курс ЦБ", unit="₽", digits=4, default=True),),
     ),
     Chart(
+        code="eur",
+        title="EUR / RUB",
+        note="Официальный курс Банка России на дату.",
+        metrics=(Metric("rate", "Курс ЦБ", unit="₽", digits=4, default=True),),
+    ),
+    Chart(
         code="cny",
         title="CNY / RUB",
         note="Официальный курс Банка России на дату.",
@@ -112,7 +118,7 @@ CHARTS_BY_CODE = {chart.code: chart for chart in CHARTS}
 
 #: Какой инструмент и какая валюта стоят за графиком
 _INDEX_SECID = {"imoex": "IMOEX"}
-_FX_CODE = {"usd": "USD", "cny": "CNY"}
+_FX_CODE = {"usd": "USD", "eur": "EUR", "cny": "CNY"}
 
 
 def catalog() -> list[dict[str, Any]]:

@@ -68,6 +68,8 @@ def _seed(session):
                       rate_date=day),
             FxRate(source="cbr", code="USD", nominal=1, value=80.0 + offset,
                    rate_date=day),
+            FxRate(source="cbr", code="EUR", nominal=1, value=90.0 + offset,
+                   rate_date=day),
             FxRate(source="cbr", code="CNY", nominal=10, value=110.0 + offset,
                    rate_date=day),
             Bar(instrument_id=index.id, trade_date=day, close=2700.0 + offset,
@@ -78,7 +80,9 @@ def _seed(session):
 class TestCatalog:
     def test_lists_all_charts(self, client):
         payload = client.get("/api/series/catalog").json()
-        assert [chart["code"] for chart in payload] == ["rates", "imoex", "usd", "cny"]
+        assert [chart["code"] for chart in payload] == [
+            "rates", "imoex", "usd", "eur", "cny"
+        ]
 
     def test_rates_chart_exposes_every_cbr_metric(self, client):
         rates = next(
@@ -144,6 +148,15 @@ class TestSeriesData:
         payload = client.get("/api/series/imoex").json()
         assert payload["series"][0]["code"] == "close"
         assert len(payload["series"][0]["points"]) == 30
+
+    def test_eur_chart_has_its_own_series(self, client):
+        payload = client.get("/api/series/eur").json()
+        assert payload["title"] == "EUR / RUB"
+        assert len(payload["series"][0]["points"]) == 30
+
+    def test_eur_download_works(self, client):
+        response = client.get("/api/series/eur/download")
+        assert response.status_code == 200
 
     def test_fx_is_reported_per_single_unit(self, client):
         """ЦБ котирует юань за 10 единиц — на графике должен быть курс за один."""

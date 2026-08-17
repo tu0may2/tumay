@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from datetime import date, datetime
 from typing import Any, Sequence
 
@@ -14,6 +15,15 @@ from openpyxl.utils import get_column_letter
 CSV_DELIMITER = ";"
 #: BOM нужен, чтобы Excel открыл UTF-8 без крякозябр
 CSV_BOM = "﻿"
+
+#: Символы, которые Excel запрещает в имени листа
+_INVALID_SHEET_CHARS = re.compile(r"[\\/?*\[\]:]")
+
+
+def _safe_sheet_title(title: str) -> str:
+    """Привести заголовок к имени листа: без запрещённых символов и длиннее 31."""
+    cleaned = _INVALID_SHEET_CHARS.sub("-", title).strip(" -")
+    return cleaned[:31] or "Данные"
 
 _HEADER_FILL = PatternFill("solid", fgColor="1F3864")
 _HEADER_FONT = Font(color="FFFFFF", bold=True, size=11)
@@ -36,8 +46,7 @@ def to_xlsx(
     """Собрать книгу Excel: числа числами, даты датами, шапка закреплена."""
     workbook = Workbook()
     sheet = workbook.active
-    # Excel не принимает в имени листа : \ / ? * [ ] и длину свыше 31 символа
-    sheet.title = sheet_title[:31] or "Данные"
+    sheet.title = _safe_sheet_title(sheet_title)
 
     header_row = 1
     if meta:
