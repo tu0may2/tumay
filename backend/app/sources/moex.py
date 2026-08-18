@@ -305,6 +305,140 @@ class MoexSource(HttpSource):
         return {"curve_date": curve_date or date.today(), "points": points}
 
     # ------------------------------------------------------------------
+    # Срочный рынок: фьючерсы и опционы ФОРТС
+    # ------------------------------------------------------------------
+    async def fetch_derivatives(
+        self, market: str = "forts", board: str = "RFUD"
+    ) -> list[dict[str, Any]]:
+        """Срез срочного рынка: справочник и торговые данные одной выборкой.
+
+        Возвращает «сырые» поля биржи — расчёты по ним делает
+        ``services/derivatives.py``. В хранилище эти данные не кладутся:
+        калькулятор работает с текущим срезом.
+
+        Годится для фьючерсов (их около пятисот). Опционные серии этим
+        способом тянуть нельзя — их почти сорок тысяч, ответ весит десятки
+        мегабайт; для них есть ``fetch_option_board``.
+        """
+        payload = await self.get_json(
+            f"/engines/futures/markets/{market}/boards/{board}/securities.json",
+            **{"iss.meta": "off", "iss.only": "securities,marketdata"},
+        )
+        securities = rows_to_dicts(payload.get("securities"))
+        market_rows = rows_to_dicts(payload.get("marketdata"))
+        market_by_id = {
+            row.get("SECID"): row for row in market_rows if row.get("SECID")
+        }
+
+        merged: list[dict[str, Any]] = []
+        for sec in securities:
+            secid = sec.get("SECID")
+            if not secid:
+                continue
+            merged.append({**sec, **market_by_id.get(secid, {})})
+        return merged
+
+    async def fetch_derivative(
+        self, secid: str, market: str = "options", board: str = "ROPD"
+    ) -> dict[str, Any] | None:
+        """Полные параметры одного контракта: шаг цены, ГО, комиссия.
+
+        Опционная доска этих полей не содержит, а для расчёта позиции они
+        обязательны — без стоимости шага прибыль не перевести в рубли.
+        """
+        payload = await self.get_json(
+            f"/engines/futures/markets/{market}/boards/{board}/securities/{secid}.json",
+            **{"iss.meta": "off", "iss.only": "securities,marketdata"},
+        )
+        securities = rows_to_dicts(payload.get("securities"))
+        if not securities:
+            return None
+        market_rows = rows_to_dicts(payload.get("marketdata"))
+        return {**securities[0], **(market_rows[0] if market_rows else {})}
+
+    async def fetch_option_assets(self) -> list[dict[str, Any]]:
+        """Базовые активы опционного рынка с оборотом и открытым интересом."""
+        payload = await self.get_json(
+            "/statistics/engines/futures/markets/options/assets.json",
+            **{"iss.meta": "off"},
+        )
+        return rows_to_dicts(payload.get("asset_volumes"))
+
+    async def fetch_derivative_candles(
+        self,
+        secid: str,
+        *,
+        market: str = "forts",
+        board: str = "RFUD",
+        interval: int = 10,
+        start_date: date | None = None,
+    ) -> list[dict[str, Any]]:
+        """Свечи по контракту срочного рынка.
+
+        Отдельно от ``fetch_candles``: тот работает по справочнику площадок
+        фондового рынка, а срочные контракты в нём не числятся — они не
+        попадают в собираемый срез и живут только в этом калькуляторе.
+        """
+        payload = await self.get_json(
+            f"/engines/futures/markets/{market}/boards/{board}"
+            f"/securities/{secid}/candles.json",
+            **{
+                "iss.meta": "off",
+                "iss.only": "candles",
+                "interval": interval,
+                "from": (start_date or date.today()).isoformat(),
+            },
+        )
+        candles: list[dict[str, Any]] = []
+        for row in rows_to_dicts(payload.get("candles")):
+            begin = to_datetime(row.get("begin"))
+            if begin is None:
+                continue
+            candles.append(
+                {
+                    "begin": begin,
+                    "open": to_float(row.get("open")),
+                    "close": to_float(row.get("close")),
+                    "high": to_float(row.get("high")),
+                    "low": to_float(row.get("low")),
+                    "volume": to_float(row.get("volume")),
+                }
+            )
+        candles.sort(key=lambda candle: candle["begin"])
+        return candles
+
+    async def fetch_option_expirations(self, asset: str) -> list[dict[str, Any]]:
+        """Даты экспирации по активу: месячные, недельные и квартальные серии."""
+        payload = await self.get_json(
+            f"/statistics/engines/futures/markets/options/assets/{asset}.json",
+            **{"iss.meta": "off"},
+        )
+        return rows_to_dicts(payload.get("expirations"))
+
+    async def fetch_option_board(
+        self, asset: str, expiration_date: date | None = None
+    ) -> dict[str, Any]:
+        """Опционная доска: страйки, цены, волатильность биржи.
+
+        Волатильность и теоретическую цену считает сама биржа — свои
+        значения выводим только там, где её данных нет.
+        """
+        params: dict[str, Any] = {"iss.meta": "off"}
+        if expiration_date is not None:
+            params["expiration_date"] = expiration_date.isoformat()
+
+        payload = await self.get_json(
+            f"/statistics/engines/futures/markets/options/assets/{asset}/optionboard.json",
+            **params,
+        )
+        asset_rows = rows_to_dicts(payload.get("asset"))
+        return {
+            "call": rows_to_dicts(payload.get("call")),
+            "put": rows_to_dicts(payload.get("put")),
+            "asset": asset_rows[0] if asset_rows else {},
+        }
+
+    # ------------------------------------------------------------------
     # Купоны и амортизации (данные эмиссии, источник — раскрытие НРД)
     # ------------------------------------------------------------------
     async def fetch_bondization(self, isin: str) -> dict[str, list[dict[str, Any]]]:

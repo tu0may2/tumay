@@ -15,7 +15,18 @@
 from fastapi import APIRouter, Depends
 
 from ..services.auth import require_viewer
-from . import admin, bonds, cash, export, imports, market, portfolio, system, treasury
+from . import (
+    admin,
+    bonds,
+    cash,
+    derivatives,
+    export,
+    imports,
+    market,
+    portfolio,
+    system,
+    treasury,
+)
 
 #: Минимум для любого обращения: роли выше запрашиваются в самих обработчиках
 _authenticated = [Depends(require_viewer)]
@@ -23,6 +34,7 @@ _authenticated = [Depends(require_viewer)]
 api_router = APIRouter()
 api_router.include_router(market.router, dependencies=_authenticated)
 api_router.include_router(bonds.router, dependencies=_authenticated)
+api_router.include_router(derivatives.router, dependencies=_authenticated)
 api_router.include_router(portfolio.router, dependencies=_authenticated)
 api_router.include_router(cash.router, dependencies=_authenticated)
 api_router.include_router(export.router, dependencies=_authenticated)

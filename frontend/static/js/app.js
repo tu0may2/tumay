@@ -3185,10 +3185,424 @@
     if (mode === 'screen' && !state.analysisLoaded) renderAnalysis();
   }
 
+
+  // ------------------------------------------------------------------
+  // Срочный рынок: калькуляторы фьючерсов и опционов
+  // ------------------------------------------------------------------
+  //
+  // Терминал не выставляет заявки — он считает. Позиция описывается
+  // вручную, а биржа даёт по ней цену, гарантийное обеспечение и
+  // волатильность; отсюда прибыль, точка безубыточности и греки.
+
+  const deriv = {
+    mode: 'futures',
+    futures: [],
+    assets: [],
+    board: null,
+    expiries: [],
+    timer: null,
+    lastResult: null,
+  };
+
+  /** Обновлять раз в 15 секунд: чаще биржа всё равно не пересчитывает срез. */
+  const DERIV_REFRESH_MS = 15000;
+
+  function derivStat(label, value, hint) {
+    return `<div class="stat">
+        <div class="stat__label">${fmt.esc(label)}</div>
+        <div class="stat__value">${value}</div>
+        ${hint ? `<div class="stat__label" style="text-transform:none">${hint}</div>` : ''}
+      </div>`;
+  }
+
+  function pnlValue(value) {
+    if (!fmt.isNum(value)) return '—';
+    const cls = value > 0 ? 'up' : value < 0 ? 'down' : '';
+    return `<span class="${cls}">${fmt.rub(value, 2)}</span>`;
+  }
+
+  /** Отметка времени последнего пересчёта — по ней видно, что данные живые. */
+  function markUpdated() {
+    $('#deriv-updated').textContent = `пересчитано в ${fmt.time(new Date())}`;
+  }
+
+  async function renderDerivatives() {
+    bindStaticFullscreen();
+    if (!deriv.futures.length) {
+      try {
+        deriv.futures = await api.derivFutures({ limit: 500 });
+      } catch (error) {
+        return failure($('#fut-params'), error);
+      }
+    }
+    fillFuturesSelect();
+    if (deriv.mode === 'futures') return calcFutures();
+    return initOptions();
+  }
+
+  function fillFuturesSelect() {
+    const search = ($('#fut-search').value || '').trim().toLowerCase();
+    const list = deriv.futures.filter((item) =>
+      !search
+      || item.secid.toLowerCase().includes(search)
+      || (item.name || '').toLowerCase().includes(search)
+    );
+
+    const select = $('#fut-secid');
+    const previous = select.value;
+    select.innerHTML = list
+      .map((item) => `<option value="${item.secid}">${fmt.esc(item.name)} · ${item.secid}</option>`)
+      .join('');
+    if (list.some((item) => item.secid === previous)) select.value = previous;
+    $('#fut-count').textContent = `${list.length} из ${deriv.futures.length} контрактов`;
+  }
+
+  function currentFuture() {
+    const secid = $('#fut-secid').value;
+    return deriv.futures.find((item) => item.secid === secid) || null;
+  }
+
+  async function calcFutures() {
+    const contract = currentFuture();
+    const params = $('#fut-params');
+    if (!contract) return charts.empty(params, 'Выберите контракт');
+
+    const entry = parseFloat($('#fut-entry').value);
+    const body = {
+      legs: [{
+        secid: contract.secid,
+        direction: Number($('#fut-direction').value),
+        quantity: Math.max(1, Number($('#fut-qty').value) || 1),
+        entry_price: Number.isFinite(entry) ? entry : null,
+      }],
+    };
+
+    let result;
+    try {
+      result = await api.derivPosition(body);
+    } catch (error) {
+      return failure(params, error);
+    }
+    deriv.lastResult = result;
+    markUpdated();
+
+    const leg = result.legs[0];
+    const move = fmt.isNum(leg.current_price) && fmt.isNum(leg.entry_price)
+      ? leg.current_price - leg.entry_price
+      : null;
+
+    params.innerHTML = [
+      derivStat('Результат', pnlValue(leg.pnl),
+        fmt.isNum(move) ? `цена ушла на ${fmt.num(move, 2)} п.` : ''),
+      derivStat('Текущая цена', fmt.num(leg.current_price, 2),
+        `вход ${fmt.num(leg.entry_price, 2)}`),
+      derivStat('Обеспечение', fmt.rub(leg.margin, 0), 'блокирует биржа'),
+      derivStat('Шаг цены', fmt.num(leg.min_step, 4),
+        `стоит ${fmt.rub(leg.step_price, 2)}`),
+      derivStat('Комиссия', fmt.rub(leg.fee, 2), 'вход и выход'),
+      derivStat('Экспирация', leg.expiry ? fmt.date(leg.expiry) : '—',
+        contract.open_position ? `ОИ ${fmt.int(contract.open_position)}` : ''),
+    ].join('');
+
+    renderPositionChart(contract, leg);
+    renderPayoff('#fut-payoff', result, leg.entry_price, 'контракта');
+  }
+
+  /** График цены контракта с горизонтальной линией входа. */
+  async function renderPositionChart(contract, leg) {
+    const container = $('#fut-chart');
+    let candles = [];
+    try {
+      const data = await api.derivCandles(contract.secid, { interval: 10 });
+      candles = (data && data.candles) || [];
+    } catch (error) {
+      // Внутри дня по контракту может не быть сделок — это не ошибка
+      candles = [];
+    }
+
+    if (!candles.length) {
+      $('#fut-live-hint').textContent = 'сделок за сессию нет';
+      return charts.empty(container, 'Биржа не отдала ход торгов по контракту');
+    }
+    $('#fut-live-hint').textContent = `${candles.length} свечей по 10 минут`;
+
+    const points = candles
+      .filter((row) => fmt.isNum(row.close))
+      .map((row) => ({ x: new Date(row.begin || row.ts).getTime(), y: row.close }));
+    if (!points.length) return charts.empty(container, 'Нет цен закрытия');
+
+    const level = leg.entry_price;
+    charts.timeSeriesChart(container, [
+      {
+        code: 'price', title: 'Цена', kind: 'line', unit: '', digits: 2,
+        color: charts.seriesColor(0), points,
+      },
+      {
+        code: 'entry', title: 'Цена входа', kind: 'line', unit: '', digits: 2,
+        color: charts.seriesColor(1), dashed: true,
+        points: [
+          { x: points[0].x, y: level },
+          { x: points[points.length - 1].x, y: level },
+        ],
+      },
+    ], {
+      height: $('#card-fut-live').classList.contains('card--full') ? 520 : 260,
+      emptyMessage: 'Нет данных',
+    });
+  }
+
+  /** Профиль результата: прибыль и убыток при разных ценах. */
+  function renderPayoff(selector, result, entryLevel, subject) {
+    const container = $(selector);
+    const curve = result.payoff || [];
+    if (!curve.length) return charts.empty(container, 'Профиль не построен');
+
+    const card = container.closest('.card');
+    charts.payoffChart(container, curve, {
+      height: card && card.classList.contains('card--full') ? 520 : 260,
+      marker: result.underlying_price,
+      breakeven: result.breakeven || [],
+      subject,
+    });
+  }
+
+  // ---- Опционы ----
+  async function initOptions() {
+    if (!deriv.assets.length) {
+      try {
+        deriv.assets = await api.derivAssets();
+      } catch (error) {
+        return failure($('#opt-params'), error);
+      }
+      const select = $('#opt-asset');
+      select.innerHTML = deriv.assets
+        .map((item) => `<option value="${item.asset}">${fmt.esc(item.name || item.asset)} · ${item.asset}</option>`)
+        .join('');
+    }
+    await loadExpiries();
+  }
+
+  async function loadExpiries() {
+    const asset = $('#opt-asset').value;
+    if (!asset) return;
+    const select = $('#opt-expiry');
+    select.innerHTML = '<option>загрузка…</option>';
+    try {
+      deriv.expiries = await api.derivExpiries(asset);
+    } catch (error) {
+      select.innerHTML = '';
+      return failure($('#opt-params'), error);
+    }
+    select.innerHTML = deriv.expiries
+      .map((item) => `<option value="${item.expiry}">${fmt.date(item.expiry)} · ${fmt.esc(item.series_title)} · ${item.days} дн.</option>`)
+      .join('');
+    await loadBoard();
+  }
+
+  async function loadBoard() {
+    const asset = $('#opt-asset').value;
+    const expiry = $('#opt-expiry').value;
+    if (!asset) return;
+
+    try {
+      deriv.board = await api.derivBoard(asset, expiry ? { expiry } : undefined);
+    } catch (error) {
+      return failure($('#opt-params'), error);
+    }
+
+    const info = deriv.assets.find((item) => item.asset === asset);
+    $('#opt-asset-hint').textContent = deriv.board.underlying_price
+      ? `${deriv.board.underlying} · ${fmt.num(deriv.board.underlying_price, 4)}`
+      : '';
+    fillStrikes();
+    renderBoardTable();
+    await calcOption();
+  }
+
+  function boardSide() {
+    if (!deriv.board) return [];
+    return $('#opt-type').value === 'C' ? deriv.board.call : deriv.board.put;
+  }
+
+  function fillStrikes() {
+    const rows = boardSide();
+    const select = $('#opt-strike');
+    const previous = select.value;
+    select.innerHTML = rows
+      .map((row) => {
+        const mark = row.open_position ? ` · ОИ ${fmt.int(row.open_position)}` : '';
+        return `<option value="${row.secid}">${fmt.num(row.strike, 2)}${mark}</option>`;
+      })
+      .join('');
+
+    if (rows.some((row) => row.secid === previous)) {
+      select.value = previous;
+    } else if (deriv.board && fmt.isNum(deriv.board.central_strike)) {
+      // По умолчанию — центральный страйк: он ближе всего к деньгам
+      const central = rows.reduce((best, row) =>
+        Math.abs(row.strike - deriv.board.central_strike) < Math.abs(best.strike - deriv.board.central_strike)
+          ? row : best, rows[0]);
+      if (central) select.value = central.secid;
+    }
+  }
+
+  function currentOption() {
+    const secid = $('#opt-strike').value;
+    return boardSide().find((row) => row.secid === secid) || null;
+  }
+
+  async function calcOption() {
+    const option = currentOption();
+    const params = $('#opt-params');
+    if (!option) return charts.empty(params, 'Выберите страйк');
+
+    const entry = parseFloat($('#opt-entry').value);
+    const body = {
+      legs: [{
+        secid: option.secid,
+        direction: Number($('#opt-direction').value),
+        quantity: Math.max(1, Number($('#opt-qty').value) || 1),
+        entry_price: Number.isFinite(entry) ? entry : (option.last || option.theor_price || null),
+        volatility: option.volatility || null,
+      }],
+      underlying_price: deriv.board ? deriv.board.underlying_price : null,
+    };
+
+    let result;
+    try {
+      result = await api.derivPosition(body);
+    } catch (error) {
+      return failure(params, error);
+    }
+    deriv.lastResult = result;
+    markUpdated();
+
+    const leg = result.legs[0];
+    const breakeven = (result.breakeven || []).map((value) => fmt.num(value, 2)).join(' и ') || '—';
+
+    params.innerHTML = [
+      derivStat('Результат', pnlValue(leg.pnl),
+        `премия ${fmt.num(leg.entry_price, 2)}`),
+      derivStat('Безубыток', breakeven, 'цена актива на экспирацию'),
+      derivStat('Обеспечение', fmt.rub(leg.margin, 0), 'блокирует биржа'),
+      derivStat('Волатильность', leg.implied_vol ? fmt.pct(leg.implied_vol, 1) : '—',
+        leg.vol_source || ''),
+      derivStat('До экспирации', fmt.isNum(leg.days_to_expiry) ? `${leg.days_to_expiry} дн.` : '—',
+        leg.expiry ? fmt.date(leg.expiry) : ''),
+      derivStat('Базовый актив', fmt.num(leg.underlying_price, 4),
+        `страйк ${fmt.num(leg.strike, 2)}`),
+    ].join('');
+
+    $('#opt-payoff-hint').textContent = breakeven !== '—' ? `безубыток ${breakeven}` : '';
+    renderPayoff('#opt-payoff', result, leg.entry_price, 'базового актива');
+    renderGreeks(leg, result);
+  }
+
+  function renderGreeks(leg, result) {
+    const container = $('#opt-greeks');
+    const greeks = (result.greeks) || leg.greeks;
+    if (!greeks) {
+      $('#opt-greeks-hint').textContent = '';
+      return charts.empty(container, 'Не хватает данных: нет цены или волатильности');
+    }
+    $('#opt-greeks-hint').textContent = `на позицию ${leg.quantity} шт.`;
+
+    const rows = [
+      { code: 'delta', title: 'Дельта', digits: 4,
+        note: 'изменение цены опциона при движении актива на 1 пункт' },
+      { code: 'gamma', title: 'Гамма', digits: 6,
+        note: 'насколько при этом изменится сама дельта' },
+      { code: 'vega', title: 'Вега', digits: 4,
+        note: 'при росте волатильности на 1 процентный пункт' },
+      { code: 'theta', title: 'Тета', digits: 4,
+        note: 'сколько позиция теряет за календарный день' },
+    ];
+
+    container.innerHTML = `<div class="stat-grid">${rows.map((row) => {
+      const value = greeks[row.code];
+      const cls = fmt.isNum(value) && value < 0 ? 'down' : '';
+      return derivStat(row.title,
+        `<span class="${cls}">${fmt.num(value, row.digits)}</span>`, row.note);
+    }).join('')}</div>`;
+  }
+
+  function renderBoardTable() {
+    const container = $('#opt-board');
+    if (!deriv.board) return charts.empty(container, 'Доска не загружена');
+
+    const byStrike = new Map();
+    (deriv.board.call || []).forEach((row) => {
+      byStrike.set(row.strike, { strike: row.strike, call: row });
+    });
+    (deriv.board.put || []).forEach((row) => {
+      const entry = byStrike.get(row.strike) || { strike: row.strike };
+      entry.put = row;
+      byStrike.set(row.strike, entry);
+    });
+    const rows = [...byStrike.values()].sort((a, b) => a.strike - b.strike);
+
+    const central = deriv.board.central_strike;
+    $('#opt-board-hint').textContent = deriv.board.expiry
+      ? `${fmt.date(deriv.board.expiry)} · ${deriv.board.days_to_expiry} дн. · центральный страйк ${fmt.num(central, 2)}`
+      : '';
+
+    const side = (row, field, digits) =>
+      row ? fmt.num(row[field], digits) : '—';
+
+    renderTable(container, [
+      { title: 'ОИ', className: 'num', render: (row) => (row.call ? fmt.int(row.call.open_position) : '—') },
+      { title: 'Цена call', className: 'num', render: (row) => side(row.call, 'theor_price', 2) },
+      { title: 'Вол. call', className: 'num', render: (row) => side(row.call, 'volatility', 1) },
+      {
+        title: 'Страйк',
+        className: 'num',
+        render: (row) => {
+          const near = fmt.isNum(central) && Math.abs(row.strike - central) < 1e-9;
+          return `<b class="${near ? 'up' : ''}">${fmt.num(row.strike, 2)}</b>`;
+        },
+      },
+      { title: 'Вол. put', className: 'num', render: (row) => side(row.put, 'volatility', 1) },
+      { title: 'Цена put', className: 'num', render: (row) => side(row.put, 'theor_price', 2) },
+      { title: 'ОИ', className: 'num', render: (row) => (row.put ? fmt.int(row.put.open_position) : '—') },
+    ], rows, { emptyMessage: 'В серии нет страйков' });
+  }
+
+  /** Пересчитать активный калькулятор. */
+  function recalcDerivatives() {
+    return deriv.mode === 'futures' ? calcFutures() : calcOption();
+  }
+
+  function setDerivMode(mode) {
+    deriv.mode = mode;
+    $$('#deriv-mode button').forEach((button) => {
+      button.classList.toggle('is-active', button.dataset.dmode === mode);
+    });
+    $('#pane-futures').hidden = mode !== 'futures';
+    $('#pane-options').hidden = mode !== 'options';
+    $('#deriv-mode-hint').textContent = mode === 'futures'
+      ? 'Прибыль считается через шаг цены, обеспечение — по данным биржи'
+      : 'Волатильность и теоретическая цена — расчёт Московской биржи';
+    renderDerivatives();
+  }
+
+  function toggleDerivLive(enabled) {
+    if (deriv.timer) {
+      clearInterval(deriv.timer);
+      deriv.timer = null;
+    }
+    if (!enabled) return;
+    // Обновляем только когда вкладка открыта: фоновые запросы к бирже
+    // нагружают и её, и сервер без пользы
+    deriv.timer = setInterval(() => {
+      if (state.view === 'derivatives') recalcDerivatives();
+    }, DERIV_REFRESH_MS);
+  }
+
   const RENDERERS = {
     overview: renderOverview,
     instruments: renderInstruments,
     bonds: renderBondsTab,
+    derivatives: renderDerivatives,
     portfolio: renderPortfolio,
     cash: renderCash,
     imports: renderImports,
@@ -3343,6 +3757,24 @@
     wireDropzone('#import-drop', '#import-file', '#import-pick', previewImportFile);
     wireDropzone('#recon-drop', '#recon-file', '#recon-pick', runReconcile);
     on('#import-apply', 'click', applyImport);
+
+
+    // Срочный рынок
+    $$('#deriv-mode button').forEach((button) => {
+      button.addEventListener('click', () => setDerivMode(button.dataset.dmode));
+    });
+    on('#fut-search', 'input', () => { fillFuturesSelect(); calcFutures(); });
+    ['#fut-secid', '#fut-direction', '#fut-qty', '#fut-entry'].forEach((selector) => {
+      on(selector, 'change', calcFutures);
+    });
+    on('#opt-asset', 'change', loadExpiries);
+    on('#opt-expiry', 'change', loadBoard);
+    on('#opt-type', 'change', () => { fillStrikes(); calcOption(); });
+    ['#opt-strike', '#opt-direction', '#opt-qty', '#opt-entry'].forEach((selector) => {
+      on(selector, 'change', calcOption);
+    });
+    on('#deriv-refresh', 'click', recalcDerivatives);
+    on('#deriv-live', 'change', (event) => toggleDerivLive(event.target.checked));
 
     // Настройки
     on('#user-form', 'submit', submitUser);

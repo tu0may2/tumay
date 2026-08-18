@@ -208,6 +208,11 @@
   /** Подпись даты: внутри года — день и месяц, на длинном периоде — месяц и год. */
   function dateTickLabel(ms, spanDays) {
     const d = new Date(ms);
+    // Внутри одной сессии дата у всех точек одна — подписываем время,
+    // иначе ось превращается в столбик одинаковых чисел
+    if (spanDays <= 2) {
+      return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    }
     if (spanDays > 400) {
       return d.toLocaleDateString('ru-RU', { month: 'short', year: '2-digit' });
     }
@@ -318,7 +323,11 @@
         .map((p, i) => `${i === 0 ? 'M' : 'L'}${scaleX(p.x).toFixed(2)},${scaleLeft(p.y).toFixed(2)}`)
         .join(' ');
       svg.appendChild(
-        el('path', { class: 'chart__line', d: path, style: `stroke:${color}` })
+        el('path', {
+          class: `chart__line${serie.dashed ? ' chart__line--dashed' : ''}`,
+          d: path,
+          style: `stroke:${color}`,
+        })
       );
     });
 
@@ -448,6 +457,175 @@
       });
       container.appendChild(legend);
     }
+    return svg;
+  }
+
+  /**
+   * Профиль выплат позиции: прибыль и убыток при разных ценах.
+   *
+   * curve: [{ price, pnl }]; marker — текущая цена, breakeven — точки нуля.
+   * Ноль здесь не просто отметка на оси: он делит график на прибыль и
+   * убыток, поэтому линия нуля рисуется всегда, а не только когда попала
+   * в диапазон значений.
+   */
+  function payoffChart(container, curve, options = {}) {
+    const opts = Object.assign(
+      { height: 260, marker: null, breakeven: [], subject: 'актива' },
+      options
+    );
+    const data = (curve || []).filter((p) => fmt.isNum(p.price) && fmt.isNum(p.pnl));
+    if (!data.length) return empty(container, opts.emptyMessage);
+
+    container.innerHTML = '';
+    const frame = document.createElement('div');
+    frame.className = 'chart-frame';
+    container.appendChild(frame);
+
+    const svg = el('svg', {
+      class: 'chart',
+      viewBox: `0 0 ${VIEW_W} ${opts.height}`,
+      preserveAspectRatio: 'none',
+      height: opts.height,
+    });
+    frame.appendChild(svg);
+
+    const geom = { left: 62, top: 12, w: VIEW_W - 62 - 16, h: opts.height - 12 - 28 };
+    const xMin = Math.min(...data.map((p) => p.price));
+    const xMax = Math.max(...data.map((p) => p.price));
+    // Ноль обязан попасть в шкалу: без него не видно, где кончается убыток
+    const bounds = niceBounds(
+      Math.min(...data.map((p) => p.pnl), 0),
+      Math.max(...data.map((p) => p.pnl), 0)
+    );
+
+    const scaleX = (x) =>
+      xMax === xMin ? geom.left + geom.w / 2 : geom.left + ((x - xMin) / (xMax - xMin)) * geom.w;
+    const scaleY = (y) =>
+      geom.top + geom.h - ((y - bounds.min) / (bounds.max - bounds.min)) * geom.h;
+
+    drawGrid(svg, geom, bounds.min, bounds.max, (v) => fmt.money(v, 0));
+
+    const zeroY = scaleY(0);
+    const path = data
+      .map((p, i) => `${i === 0 ? 'M' : 'L'}${scaleX(p.price).toFixed(2)},${scaleY(p.pnl).toFixed(2)}`)
+      .join(' ');
+
+    // Заливка прибыли и убытка разными цветами: направление читается сразу
+    const defs = el('defs');
+    const clipUp = el('clipPath', { id: 'payoff-up' });
+    clipUp.appendChild(el('rect', {
+      x: geom.left, y: geom.top, width: geom.w, height: Math.max(0, zeroY - geom.top),
+    }));
+    const clipDown = el('clipPath', { id: 'payoff-down' });
+    clipDown.appendChild(el('rect', {
+      x: geom.left, y: zeroY, width: geom.w, height: Math.max(0, geom.top + geom.h - zeroY),
+    }));
+    defs.appendChild(clipUp);
+    defs.appendChild(clipDown);
+    svg.appendChild(defs);
+
+    const area = `${path} L${scaleX(data[data.length - 1].price).toFixed(2)},${zeroY}` +
+      ` L${scaleX(data[0].price).toFixed(2)},${zeroY} Z`;
+    svg.appendChild(el('path', {
+      d: area, 'clip-path': 'url(#payoff-up)',
+      style: 'fill:var(--up);opacity:0.18',
+    }));
+    svg.appendChild(el('path', {
+      d: area, 'clip-path': 'url(#payoff-down)',
+      style: 'fill:var(--down);opacity:0.18',
+    }));
+
+    svg.appendChild(el('line', {
+      class: 'chart__zero',
+      x1: geom.left, x2: geom.left + geom.w, y1: zeroY, y2: zeroY,
+    }));
+    svg.appendChild(el('path', { class: 'chart__line', d: path }));
+
+    // Текущая цена базового актива
+    if (fmt.isNum(opts.marker) && opts.marker >= xMin && opts.marker <= xMax) {
+      const x = scaleX(opts.marker);
+      svg.appendChild(el('line', {
+        class: 'chart__rule', x1: x, x2: x, y1: geom.top, y2: geom.top + geom.h,
+      }));
+      svg.appendChild(el('text', {
+        class: 'chart__label', x: x + 4, y: geom.top + 10,
+      }, `сейчас ${fmt.num(opts.marker, 2)}`));
+    }
+
+    (opts.breakeven || []).forEach((value) => {
+      if (!fmt.isNum(value) || value < xMin || value > xMax) return;
+      const x = scaleX(value);
+      svg.appendChild(el('circle', {
+        cx: x, cy: zeroY, r: 4, style: 'fill:var(--warn)',
+      }));
+    });
+
+    const ticks = Math.min(7, Math.max(2, Math.round(geom.w / 110)));
+    for (let i = 0; i <= ticks; i += 1) {
+      const value = xMin + ((xMax - xMin) * i) / ticks;
+      svg.appendChild(el('text', {
+        class: 'chart__axis',
+        x: geom.left + (geom.w * i) / ticks,
+        y: opts.height - 8,
+        'text-anchor': i === 0 ? 'start' : i === ticks ? 'end' : 'middle',
+      }, fmt.num(value, value > 1000 ? 0 : 2)));
+    }
+
+    // Подсказка при наведении
+    const hover = el('g', { style: 'pointer-events:none', opacity: '0' });
+    const rule = el('line', {
+      class: 'chart__rule', y1: geom.top, y2: geom.top + geom.h, x1: 0, x2: 0,
+    });
+    const dot = el('circle', { r: 4, class: 'chart__marker', style: 'fill:var(--accent)' });
+    hover.appendChild(rule);
+    hover.appendChild(dot);
+    svg.appendChild(hover);
+
+    const tip = document.createElement('div');
+    tip.className = 'chart-tip';
+    tip.hidden = true;
+    frame.appendChild(tip);
+
+    svg.addEventListener('mousemove', (event) => {
+      const rect = svg.getBoundingClientRect();
+      if (!rect.width) return;
+      const localX = ((event.clientX - rect.left) / rect.width) * VIEW_W;
+      const ratio = (localX - geom.left) / geom.w;
+      if (ratio < 0 || ratio > 1) {
+        hover.setAttribute('opacity', '0');
+        tip.hidden = true;
+        return;
+      }
+      const target = xMin + ratio * (xMax - xMin);
+      const nearest = data.reduce((best, p) =>
+        Math.abs(p.price - target) < Math.abs(best.price - target) ? p : best, data[0]);
+
+      const x = scaleX(nearest.price);
+      rule.setAttribute('x1', x);
+      rule.setAttribute('x2', x);
+      dot.setAttribute('cx', x);
+      dot.setAttribute('cy', scaleY(nearest.pnl));
+      hover.setAttribute('opacity', '1');
+
+      const sign = nearest.pnl > 0 ? 'up' : nearest.pnl < 0 ? 'down' : '';
+      tip.innerHTML =
+        `<div class="chart-tip__date">цена ${opts.subject}: ${fmt.num(nearest.price, 2)}</div>` +
+        `<span class="chart-tip__row">
+           <span class="chart-tip__name">результат</span>
+           <span class="chart-tip__value ${sign}">${fmt.rub(nearest.pnl, 2)}</span>
+         </span>`;
+      tip.hidden = false;
+
+      const px = (x / VIEW_W) * rect.width;
+      const width = tip.offsetWidth || 170;
+      tip.style.left = `${Math.max(4, Math.min(px + 14, rect.width - width - 4))}px`;
+      tip.style.top = '10px';
+    });
+    svg.addEventListener('mouseleave', () => {
+      hover.setAttribute('opacity', '0');
+      tip.hidden = true;
+    });
+
     return svg;
   }
 
@@ -740,7 +918,7 @@
   }
 
   global.charts = {
-    lineChart, barChart, timeSeriesChart, priceVolumeChart,
+    lineChart, barChart, timeSeriesChart, payoffChart, priceVolumeChart,
     scatterChart, barsHorizontal, empty, seriesColor,
   };
 })(window);
