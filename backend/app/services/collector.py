@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timedelta
 from typing import Any, Iterable, Iterator, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
@@ -34,7 +34,7 @@ from ..models import (
 )
 from ..sources import CbrSource, MoexSource, NsdSource
 from ..sources.base import rows_to_dicts
-from .analytics import latest_quote_ids
+from .analytics import latest_quote_map
 
 logger = logging.getLogger(__name__)
 
@@ -566,6 +566,37 @@ class Collector:
             counter["rows"] = filled
             return filled
 
+    def prune_quotes(self, keep_days: int | None = None) -> int:
+        """Убрать внутридневные срезы старше срока хранения.
+
+        Срез снимается каждые пять минут по всем бумагам — это около сорока
+        тысяч строк в день. Таблица растёт без предела, а почти каждая
+        страница терминала считает по ней «последнюю котировку по каждой
+        бумаге», то есть проходит её целиком: чем она больше, тем медленнее
+        работает всё.
+
+        Дневная история при этом не теряется — она хранится в таблице баров
+        отдельно и живёт своей жизнью. Удаляются только промежуточные срезы
+        внутри дня, и то лишь давние.
+        """
+        keep_days = keep_days or settings.quote_retention_days
+        if keep_days <= 0:
+            return 0
+
+        cutoff = datetime.utcnow() - timedelta(days=keep_days)
+        with session_scope() as session:
+            # Последний срез по каждой бумаге не трогаем ни при каких
+            # условиях: по неликвидным выпускам он может быть единственным,
+            # и без него бумага пропадёт из витрин
+            keep_ids = select(func.max(Quote.id)).group_by(Quote.instrument_id)
+            removed = session.execute(
+                delete(Quote).where(Quote.ts < cutoff, Quote.id.notin_(keep_ids))
+            ).rowcount or 0
+
+        if removed:
+            logger.info("Очистка: удалено %s устаревших срезов котировок", removed)
+        return removed
+
     async def collect_all(self, *, with_history: bool = True) -> dict[str, int]:
         """Полный цикл сбора. Ошибка одного шага не отменяет остальные."""
         async with self._lock:
@@ -665,12 +696,14 @@ def _history_targets(
     # Акции и облигации отбираем отдельными квотами: по обороту акции
     # вытесняют облигации почти полностью, и тогда по облигациям не с чем
     # считать историю премии и доходности.
+    latest = latest_quote_map(session)
+
     def _top(kind: str, limit: int) -> list[tuple[int, str, str]]:
         statement = (
             select(Instrument.id, Instrument.secid, Instrument.board)
-            .join(Quote, Quote.instrument_id == Instrument.id)
+            .join(latest, latest.c.instrument_id == Instrument.id)
+            .join(Quote, Quote.id == latest.c.quote_id)
             .where(
-                Quote.id.in_(latest_quote_ids(session)),
                 Quote.turnover.isnot(None),
                 Quote.turnover > 0,
                 Instrument.kind == kind,
@@ -737,9 +770,10 @@ def _bond_targets(session: Session, limit: int) -> list[tuple[str, str]]:
     )
     if has_quotes:
         # Приоритет — торгуемым выпускам: по ним график выплат реально нужен
+        latest = latest_quote_map(session)
         statement = (
-            statement.join(Quote, Quote.instrument_id == Instrument.id)
-            .where(Quote.id.in_(latest_quote_ids(session)))
+            statement.join(latest, latest.c.instrument_id == Instrument.id)
+            .join(Quote, Quote.id == latest.c.quote_id)
             .order_by(Quote.turnover.desc().nullslast())
         )
     liquid = [

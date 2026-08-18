@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import Bar, CorpAction, Deal, Instrument, Quote
-from .analytics import latest_quote_ids
+from .analytics import latest_quote_map
 from .fx import BASE_CURRENCY, FxBook, coupon_to_rub, instrument_currency, is_rub
 
 #: Методы учёта себестоимости
@@ -246,12 +246,14 @@ def compute_positions(
             select(Instrument).where(Instrument.secid.in_(secids))
         ).scalars()
     }
+    latest = latest_quote_map(session)
     quotes = {
         instrument.secid: quote
         for instrument, quote in session.execute(
             select(Instrument, Quote)
-            .join(Quote, Quote.instrument_id == Instrument.id)
-            .where(Quote.id.in_(latest_quote_ids(session)), Instrument.secid.in_(secids))
+            .join(latest, latest.c.instrument_id == Instrument.id)
+            .join(Quote, Quote.id == latest.c.quote_id)
+            .where(Instrument.secid.in_(secids))
         ).all()
     }
 

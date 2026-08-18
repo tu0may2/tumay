@@ -29,11 +29,25 @@ if settings.database_url.startswith("sqlite"):
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragmas(dbapi_connection, connection_record):  # noqa: ANN001
-        """WAL даёт одновременное чтение из API и запись из сборщика."""
+        """Настройки SQLite под сервер с медленным диском.
+
+        WAL даёт одновременное чтение из API и запись из сборщика. Остальное
+        сокращает обращения к диску: почти каждая страница терминала считает
+        «последнюю котировку по каждой бумаге», а это проход по всей таблице
+        котировок. На сетевом HDD такой проход упирается не в скорость чтения,
+        а в число операций в секунду, поэтому чем больше данных удержится в
+        памяти, тем меньше запросов уходит на диск вообще.
+        """
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA foreign_keys=ON")
+        # Кэш страниц: отрицательное значение задаёт размер в килобайтах
+        cursor.execute(f"PRAGMA cache_size=-{settings.sqlite_cache_mb * 1024}")
+        # Отображение файла в память: чтение идёт без системных вызовов
+        cursor.execute(f"PRAGMA mmap_size={settings.sqlite_mmap_mb * 1024 * 1024}")
+        # Сортировки и временные таблицы — в памяти, а не отдельными файлами
+        cursor.execute("PRAGMA temp_store=MEMORY")
         cursor.close()
 
 

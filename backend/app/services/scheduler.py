@@ -50,9 +50,16 @@ class Scheduler:
 
     def _housekeeping_sync(self) -> None:
         from ..db import session_scope
+        from .collector import Collector
         from .history import take_snapshot
         from .portfolio import portfolio_names
         from .treasury_extras import notify
+
+        # Чистим срезы до снимков: дальше по циклу таблица уже не мешает
+        try:
+            Collector().prune_quotes()
+        except Exception as exc:  # noqa: BLE001 — уборка не должна ронять цикл
+            logger.warning("Очистка котировок не выполнена: %s", exc)
 
         with session_scope() as session:
             if settings.snapshots_enabled:

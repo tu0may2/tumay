@@ -55,11 +55,17 @@ def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
 # ----------------------------------------------------------------------
 # Доступ к последнему срезу
 # ----------------------------------------------------------------------
-def latest_quote_ids(session: Session) -> Select:
-    """Подзапрос: id последней котировки по каждому инструменту.
+def latest_quote_map(session: Session):
+    """Подзапрос «инструмент → id его последней котировки».
 
     Площадки снимаются разными запросами, поэтому единого «последнего ts» нет —
     берём максимум по каждому инструменту отдельно.
+
+    Отдаём пару значений, а не один столбец, чтобы вызывающий код мог
+    присоединить подзапрос, а не проверять вхождение через ``IN``. Разница не
+    косметическая: на ``IN`` SQLite материализует список из тысяч id и для
+    каждой строки проверяет вхождение — тот же отбор занимал три секунды
+    против шестидесяти миллисекунд с соединением.
     """
     latest_ts = (
         select(Quote.instrument_id, func.max(Quote.ts).label("ts"))
@@ -67,13 +73,23 @@ def latest_quote_ids(session: Session) -> Select:
         .subquery()
     )
     return (
-        select(func.max(Quote.id))
+        select(
+            Quote.instrument_id.label("instrument_id"),
+            func.max(Quote.id).label("quote_id"),
+        )
         .join(
             latest_ts,
             (Quote.instrument_id == latest_ts.c.instrument_id) & (Quote.ts == latest_ts.c.ts),
         )
         .group_by(Quote.instrument_id)
+        .subquery()
     )
+
+
+def latest_quote_ids(session: Session) -> Select:
+    """То же самое одним столбцом — для мест, где нужен именно список id."""
+    latest = latest_quote_map(session)
+    return select(latest.c.quote_id)
 
 
 def latest_rows(
@@ -84,10 +100,11 @@ def latest_rows(
     secids: Sequence[str] | None = None,
 ) -> list[tuple[Instrument, Quote]]:
     """Последний срез: пары (инструмент, котировка)."""
+    latest = latest_quote_map(session)
     statement = (
         select(Instrument, Quote)
-        .join(Quote, Quote.instrument_id == Instrument.id)
-        .where(Quote.id.in_(latest_quote_ids(session)))
+        .join(latest, latest.c.instrument_id == Instrument.id)
+        .join(Quote, Quote.id == latest.c.quote_id)
     )
     if kinds:
         statement = statement.where(Instrument.kind.in_(list(kinds)))
