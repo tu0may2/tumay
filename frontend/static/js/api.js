@@ -130,6 +130,7 @@
     seriesDownload: (chart, params) =>
       download(`/api/series/${encodeURIComponent(chart)}/download`, { params }),
     boards: () => request('/api/boards'),
+    securityTypes: (params) => request('/api/instruments/security-types', { params }),
     health: () => request('/api/health'),
     sources: () => request('/api/sources'),
     runs: (params) => request('/api/collect/runs', { params }),

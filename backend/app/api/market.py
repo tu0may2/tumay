@@ -29,6 +29,9 @@ def get_overview(session: Session = Depends(get_session)) -> dict[str, Any]:
 def get_instruments(
     kind: list[str] | None = Query(None, description="share | bond | index | currency"),
     board: list[str] | None = Query(None, description="Режим торгов, например TQBR"),
+    security_type: list[str] | None = Query(
+        None, description="Вид бумаги: ofz_bond, corporate_bond, common_share…"
+    ),
     search: str | None = Query(None, description="Поиск по коду, названию или ISIN"),
     min_turnover: float | None = Query(None, ge=0, description="Минимальный оборот, руб."),
     min_liquidity: float | None = Query(None, ge=0, le=100),
@@ -46,6 +49,7 @@ def get_instruments(
         session,
         kinds=kind,
         boards=board,
+        security_types=security_type,
         search=search,
         min_turnover=min_turnover,
         min_liquidity=min_liquidity,
@@ -401,3 +405,16 @@ def get_boards(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
         }
         for board, spec in BOARD_SPECS.items()
     ]
+
+
+@router.get("/instruments/security-types", summary="Виды бумаг для фильтра")
+def get_security_types(
+    kind: list[str] | None = Query(None, description="share | bond | index | currency"),
+    session: Session = Depends(get_session),
+) -> dict[str, list[dict[str, Any]]]:
+    """Вложенный список видов бумаг, сгруппированный по классу инструмента.
+
+    Отдаёт только виды, реально встретившиеся в загруженных данных — иначе
+    выбор в фильтре часто вёл бы в пустую таблицу.
+    """
+    return analytics.security_type_catalog(session, kinds=kind)

@@ -712,11 +712,41 @@
   // ------------------------------------------------------------------
   // Витрина инструментов
   // ------------------------------------------------------------------
+
+  /** Список видов бумаг зависит от выбранного класса — грузим заново при его смене. */
+  async function refreshInstrumentSecurityTypes() {
+    const select = $('#f-security-type');
+    const kind = $('#f-kind').value;
+    // Ключ-метка, чтобы не перезапрашивать одно и то же повторно
+    const cacheKey = kind || '*';
+    if (select.dataset.loadedFor === cacheKey) return;
+
+    const current = select.value;
+    try {
+      const catalog = await api.securityTypes(kind ? { kind: [kind] } : undefined);
+      const items = Object.values(catalog).flat();
+      select.innerHTML = '<option value="">Любой</option>';
+      items.forEach((item) => {
+        const option = document.createElement('option');
+        option.value = item.code;
+        option.textContent = `${item.title} (${fmt.int(item.count)})`;
+        select.appendChild(option);
+      });
+      select.dataset.loadedFor = cacheKey;
+      // Прежний выбор мог исчезнуть при смене класса — тогда сбрасываем на «любой»
+      select.value = items.some((item) => item.code === current) ? current : '';
+    } catch (error) {
+      // Справочник видов не критичен для отбора — при сбое просто оставляем «любой»
+    }
+  }
+
   async function renderInstruments() {
     const container = $('#instruments-table');
     loading(container);
+    await refreshInstrumentSecurityTypes();
 
     const kind = $('#f-kind').value;
+    const securityType = $('#f-security-type').value;
     const params = {
       search: $('#f-search').value.trim(),
       min_turnover: (parseFloat($('#f-turnover').value) || 0) * 1e6,
@@ -725,6 +755,7 @@
       limit: 200,
     };
     if (kind) params.kind = [kind];
+    if (securityType) params.security_type = [securityType];
 
     try {
       const data = await api.instruments(params);
@@ -735,6 +766,7 @@
       renderTable(container, [
         pickColumn('instruments'),
         { title: 'Бумага', render: (row) => secCell(row) },
+        { title: 'Вид', render: (row) => `<span class="dim">${fmt.esc(row.security_type_title || '—')}</span>` },
         { title: 'ISIN', render: (row) => `<span class="dim" style="font-family:var(--mono);font-size:11px">${fmt.esc(row.isin || '—')}</span>` },
         { title: 'Цена', className: 'num', render: (row) => fmt.price(row.last) },
         { title: 'Изм.', className: 'num', render: (row) => changeCell(row.change_pct) },
@@ -796,6 +828,8 @@
     if (level) params.list_level = [level];
     const currency = pick('#a-currency');
     if (currency) params.currency = [currency];
+    const securityType = pick('#a-security-type');
+    if (securityType) params.security_type = [securityType];
     return params;
   }
 
@@ -829,6 +863,14 @@
           option.textContent = item.title;
           benchmarks.appendChild(option);
         });
+        // Виды выпусков — тоже только встретившиеся среди облигаций
+        const securityTypes = $('#a-security-type');
+        (options.security_types || []).forEach((item) => {
+          const option = document.createElement('option');
+          option.value = item.code;
+          option.textContent = `${item.title} (${fmt.int(item.count)})`;
+          securityTypes.appendChild(option);
+        });
       }
 
       const data = await api.bondAnalysis(analysisParams());
@@ -841,6 +883,7 @@
       renderTable(container, [
         pickColumn('analysis'),
         { title: 'Выпуск', render: (row) => secCell(row) },
+        { title: 'Вид', render: (row) => `<span class="dim">${fmt.esc(row.security_type_title || '—')}</span>` },
         { title: 'ISIN', render: (row) => `<span class="dim" style="font-family:var(--mono);font-size:11px">${fmt.esc(row.isin || '—')}</span>` },
         { title: 'Погашение', sortBy: 'maturity_date', render: (row) => `<span class="dim">${fmt.date(row.maturity_date)}</span>` },
         { title: 'Лет', className: 'num', sortBy: 'years_to_maturity', render: (row) => fmt.num(row.years_to_maturity, 2) },
@@ -1220,6 +1263,7 @@
     if (params.coupon_type && $('#a-coupon')) $('#a-coupon').value = params.coupon_type[0] || '';
     if (params.list_level && $('#a-level')) $('#a-level').value = params.list_level[0] || '';
     if (params.currency && $('#a-currency')) $('#a-currency').value = params.currency[0] || '';
+    if (params.security_type && $('#a-security-type')) $('#a-security-type').value = params.security_type[0] || '';
     renderAnalysis();
   }
 
@@ -3549,7 +3593,7 @@
      '#a-matfrom', '#a-matto', '#a-turnover', '#a-risk'].forEach((selector) =>
       on(selector, 'input', onAnalysisFilter)
     );
-    ['#a-coupon', '#a-benchmark', '#a-level', '#a-currency', '#a-offer', '#a-amort'].forEach(
+    ['#a-coupon', '#a-benchmark', '#a-level', '#a-currency', '#a-security-type', '#a-offer', '#a-amort'].forEach(
       (selector) => on(selector, 'change', renderAnalysis)
     );
     // Список сортировки и стрелки в шапке таблицы — одно и то же состояние
@@ -3623,7 +3667,7 @@
     ['#f-search', '#f-turnover', '#f-liquidity'].forEach((selector) =>
       on(selector, 'input', onInstrumentFilter)
     );
-    ['#f-kind', '#f-sort'].forEach((selector) =>
+    ['#f-kind', '#f-sort', '#f-security-type'].forEach((selector) =>
       on(selector, 'change', renderInstruments)
     );
 

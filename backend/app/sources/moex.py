@@ -319,6 +319,46 @@ class MoexSource(HttpSource):
             "offers": rows_to_dicts(payload.get("offers")),
         }
 
+    async def fetch_security_types(self) -> dict[str, str]:
+        """Справочник видов бумаг: системное имя → название по-русски."""
+        payload = await self.get_json(
+            "/index.json", **{"iss.meta": "off", "iss.only": "securitytypes"}
+        )
+        return {
+            row["security_type_name"]: (row.get("security_type_title") or "").strip()
+            for row in rows_to_dicts(payload.get("securitytypes"))
+            if row.get("security_type_name")
+        }
+
+    async def fetch_securities_reference(
+        self, market: str, *, page_size: int = 100, max_pages: int = 60
+    ) -> list[dict[str, Any]]:
+        """Массовый справочник торгуемых бумаг рынка.
+
+        Здесь есть то, чего нет в срезе доски: вид бумаги словами
+        (``ofz_bond``, ``corporate_bond``) и наименование эмитента. Отдаётся
+        страницами по сто записей, поэтому рынок облигаций — это три десятка
+        запросов; вызывать имеет смысл нечасто.
+        """
+        rows: list[dict[str, Any]] = []
+        for page in range(max_pages):
+            payload = await self.get_json(
+                "/securities.json",
+                **{
+                    "iss.meta": "off",
+                    "engine": "stock",
+                    "market": market,
+                    "is_trading": 1,
+                    "start": page * page_size,
+                    "limit": page_size,
+                },
+            )
+            batch = rows_to_dicts(payload.get("securities"))
+            rows.extend(batch)
+            if len(batch) < page_size:
+                break
+        return rows
+
     async def fetch_security_card(self, secid: str) -> dict[str, Any]:
         """Карточка выпуска: поля, которых нет в биржевом срезе.
 

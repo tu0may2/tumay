@@ -35,6 +35,7 @@ from ..models import (
 from ..sources import CbrSource, MoexSource, NsdSource
 from ..sources.base import rows_to_dicts
 from .analytics import latest_quote_map
+from .security_types import SECURITY_TYPE_TITLES
 
 logger = logging.getLogger(__name__)
 
@@ -488,6 +489,67 @@ class Collector:
                 )
             return counter["rows"]
 
+    async def collect_security_types(self) -> int:
+        """Вид бумаги словами: ОФЗ, корпоративная, биржевая, привилегированная.
+
+        В биржевом срезе вид закодирован одной буквой, по которой ничего не
+        отберёшь. Массовый справочник бумаг отдаёт его словами — и заодно
+        наименование эмитента, поэтому здесь же заполняем и его: иначе
+        эмитенты добираются по одной бумаге за запрос.
+
+        Рынок облигаций — это около тридцати страниц, акций ещё десяток.
+        Вид выпуска не меняется, поэтому шаг идёт вместе со справочниками
+        раз в час, а не при каждом срезе.
+        """
+        with self._run("moex", "security_types") as counter:
+            async with MoexSource() as moex:
+                titles = await moex.fetch_security_types()
+                pages = await asyncio.gather(
+                    moex.fetch_securities_reference("bonds"),
+                    moex.fetch_securities_reference("shares"),
+                    return_exceptions=True,
+                )
+
+            reference: dict[str, dict[str, Any]] = {}
+            for outcome in pages:
+                if isinstance(outcome, Exception):
+                    logger.warning("Справочник бумаг не получен: %s", outcome)
+                    continue
+                for row in outcome:
+                    secid = row.get("secid")
+                    if secid:
+                        reference[secid.upper()] = row
+
+            if not reference:
+                return 0
+
+            updated = 0
+            with session_scope() as session:
+                for instrument in session.execute(select(Instrument)).scalars():
+                    row = reference.get(instrument.secid.upper())
+                    if row is None:
+                        continue
+                    kind = row.get("type")
+                    if kind and instrument.security_type != kind:
+                        instrument.security_type = kind
+                        updated += 1
+                    # Эмитент нужен лимиту на заёмщика — берём заодно
+                    issuer = row.get("emitent_title")
+                    if issuer and not instrument.issuer:
+                        instrument.issuer = issuer
+                        instrument.issuer_inn = row.get("emitent_inn")
+
+            # Названия видов, которых нет в нашем словаре, добираем у биржи:
+            # свои названия не перекрываем — у биржи два разных вида зовутся
+            # одинаково («Государственная облигация» и для ОФЗ, и для
+            # суверенных еврооблигаций), а в фильтре нужны различимые пункты
+            for code, title in titles.items():
+                if title and code not in SECURITY_TYPE_TITLES:
+                    SECURITY_TYPE_TITLES[code] = title
+
+            counter["rows"] = updated
+            return updated
+
     async def collect_coupon_benchmarks(self, limit: int | None = None) -> int:
         """К чему привязан купон флоатеров — по одной карточке за запрос.
 
@@ -649,6 +711,7 @@ class Collector:
             # набирается за несколько циклов
             steps.append(("coupon_benchmarks", self.collect_coupon_benchmarks()))
             steps.append(("rate_calendar", self.collect_rate_calendar()))
+            steps.append(("security_types", self.collect_security_types()))
 
             for name, coro in steps:
                 try:

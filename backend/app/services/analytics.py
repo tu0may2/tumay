@@ -11,6 +11,8 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from ..models import Bar, CorpAction, CurvePoint, FxRate, Instrument, MacroRate, Quote
+from .security_types import security_type_title
+from .security_types import sort_key as security_type_sort_key
 
 #: Веса компонентов оценки ликвидности
 _W_TURNOVER, _W_TRADES, _W_SPREAD = 0.45, 0.30, 0.25
@@ -98,6 +100,7 @@ def latest_rows(
     kinds: Sequence[str] | None = None,
     boards: Sequence[str] | None = None,
     secids: Sequence[str] | None = None,
+    security_types: Sequence[str] | None = None,
 ) -> list[tuple[Instrument, Quote]]:
     """Последний срез: пары (инструмент, котировка)."""
     latest = latest_quote_map(session)
@@ -112,6 +115,11 @@ def latest_rows(
         statement = statement.where(Instrument.board.in_(list(boards)))
     if secids:
         statement = statement.where(Instrument.secid.in_(list(secids)))
+    if security_types:
+        # Отбор по виду делаем запросом, а не в питоне: вид сужает выборку
+        # сильнее любого другого условия, и лишние тысячи строк незачем
+        # разворачивать в строки витрины, чтобы тут же их выбросить
+        statement = statement.where(Instrument.security_type.in_(list(security_types)))
     return [tuple(row) for row in session.execute(statement).all()]
 
 
@@ -216,6 +224,8 @@ def build_row(
         "isin": instrument.isin,
         "board": instrument.board,
         "kind": instrument.kind,
+        "security_type": instrument.security_type,
+        "security_type_title": security_type_title(instrument.security_type),
         "name": instrument.display_name,
         "full_name": instrument.full_name,
         "currency": instrument.currency,
@@ -313,6 +323,7 @@ def screener(
     *,
     kinds: Sequence[str] | None = None,
     boards: Sequence[str] | None = None,
+    security_types: Sequence[str] | None = None,
     search: str | None = None,
     min_turnover: float | None = None,
     min_liquidity: float | None = None,
@@ -336,7 +347,9 @@ def screener(
             instrument, quote, curve_points,
             fx_rate=fx.rate(instrument_currency(instrument)) or 1.0,
         )
-        for instrument, quote in latest_rows(session, kinds=kinds, boards=boards)
+        for instrument, quote in latest_rows(
+            session, kinds=kinds, boards=boards, security_types=security_types
+        )
     ]
 
     if search:
@@ -379,6 +392,42 @@ def screener(
         "curve_date": curve["curve_date"],
         "items": rows[offset : offset + limit],
     }
+
+
+def security_type_catalog(
+    session: Session, *, kinds: Sequence[str] | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """Какие виды бумаг встречаются в загруженных данных, по классам.
+
+    Показываем только то, что реально загружено: список всех мыслимых видов
+    биржи длиннее и наполовину пуст — выбрав из него, казначей получил бы
+    пустую таблицу и решил, что терминал сломан. Заодно отдаём число бумаг,
+    чтобы было видно, что стоит за пунктом списка.
+    """
+    statement = (
+        select(
+            Instrument.kind,
+            Instrument.security_type,
+            func.count(Instrument.id),
+        )
+        .where(Instrument.security_type.isnot(None))
+        .group_by(Instrument.kind, Instrument.security_type)
+    )
+    if kinds:
+        statement = statement.where(Instrument.kind.in_(list(kinds)))
+
+    catalog: dict[str, list[dict[str, Any]]] = {}
+    for kind, code, count in session.execute(statement).all():
+        catalog.setdefault(kind, []).append(
+            {
+                "code": code,
+                "title": security_type_title(code),
+                "count": count,
+            }
+        )
+    for items in catalog.values():
+        items.sort(key=lambda item: security_type_sort_key(item["code"]))
+    return catalog
 
 
 # ----------------------------------------------------------------------

@@ -237,6 +237,7 @@ def analyse(
     currencies: Sequence[str] | None = None,
     coupon_types: Sequence[str] | None = None,
     benchmarks: Sequence[str] | None = None,
+    security_types: Sequence[str] | None = None,
     has_offer: bool | None = None,
     has_amortization: bool | None = None,
     max_risk_score: float | None = None,
@@ -247,7 +248,7 @@ def analyse(
 ) -> dict[str, Any]:
     """Отобрать и разметить облигации по заданным условиям."""
     curve = yield_curve(session)
-    rows_raw = latest_rows(session, kinds=("bond",))
+    rows_raw = latest_rows(session, kinds=("bond",), security_types=security_types)
 
     today = date.today()
 
@@ -410,6 +411,7 @@ ANALYSIS_COLUMNS: tuple[dict[str, Any], ...] = (
     {"code": "isin", "title": "ISIN", "kind": "text"},
     {"code": "name", "title": "Выпуск", "kind": "text"},
     {"code": "full_name", "title": "Полное наименование", "kind": "text"},
+    {"code": "security_type_title", "title": "Вид бумаги", "kind": "text"},
     {"code": "maturity_date", "title": "Погашение", "kind": "date"},
     {"code": "years_to_maturity", "title": "Лет до погашения", "kind": "number", "digits": 2},
     {"code": "offer_date", "title": "Оферта", "kind": "date"},

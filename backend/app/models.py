@@ -53,6 +53,10 @@ class Instrument(Base):
     list_level: Mapped[int | None] = mapped_column(Integer)
     sector: Mapped[str | None] = mapped_column(String(64))
     sec_type: Mapped[str | None] = mapped_column(String(16))
+    #: Вид бумаги словами: ofz_bond, corporate_bond, common_share…
+    #: В биржевом срезе есть только однобуквенный код, поэтому вид приходит
+    #: из массового справочника бумаг и заполняется отдельным шагом сбора
+    security_type: Mapped[str | None] = mapped_column(String(32), index=True)
     # Эмитент нужен для лимитов: несколько выпусков одного заёмщика
     # складываются в общий риск на него
     issuer: Mapped[str | None] = mapped_column(String(256), index=True)
