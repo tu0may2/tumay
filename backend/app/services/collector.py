@@ -579,19 +579,54 @@ class Collector:
         отдельно и живёт своей жизнью. Удаляются только промежуточные срезы
         внутри дня, и то лишь давние.
         """
-        keep_days = keep_days or settings.quote_retention_days
+        # Ноль — осмысленное значение «не удалять ничего», поэтому подстановка
+        # умолчания только при None: keep_days or ... подменил бы ноль семёркой
+        if keep_days is None:
+            keep_days = settings.quote_retention_days
         if keep_days <= 0:
             return 0
 
         cutoff = datetime.utcnow() - timedelta(days=keep_days)
-        with session_scope() as session:
-            # Последний срез по каждой бумаге не трогаем ни при каких
-            # условиях: по неликвидным выпускам он может быть единственным,
-            # и без него бумага пропадёт из витрин
-            keep_ids = select(func.max(Quote.id)).group_by(Quote.instrument_id)
-            removed = session.execute(
-                delete(Quote).where(Quote.ts < cutoff, Quote.id.notin_(keep_ids))
-            ).rowcount or 0
+        batch = settings.quote_prune_batch
+        limit = settings.quote_prune_max_rows
+        removed = 0
+
+        # Удаляем порциями с отдельной транзакцией на каждую. Одним запросом
+        # это выглядит короче, но на сервере с медленным диском удаление
+        # сотен тысяч строк держит долгую транзакцию и разрастается журнал —
+        # терминал в это время не отвечает. Порциями диск успевает разгрестись
+        # между заходами, а незавершённая уборка просто продолжится в
+        # следующем цикле обслуживания.
+        while removed < limit:
+            with session_scope() as session:
+                # Последний срез по каждой бумаге не трогаем ни при каких
+                # условиях: по неликвидным выпускам он может быть
+                # единственным, и без него бумага пропадёт из витрин.
+                #
+                # Свежесть определяем по метке времени, а не по номеру записи:
+                # они совпадают, только пока строки пишутся строго по порядку,
+                # а после ручной загрузки истории или переноса базы — уже нет
+                latest = (
+                    select(
+                        Quote.instrument_id.label("instrument_id"),
+                        func.max(Quote.ts).label("ts"),
+                    )
+                    .group_by(Quote.instrument_id)
+                    .subquery()
+                )
+                stale = [
+                    row[0]
+                    for row in session.execute(
+                        select(Quote.id)
+                        .join(latest, latest.c.instrument_id == Quote.instrument_id)
+                        .where(Quote.ts < cutoff, Quote.ts < latest.c.ts)
+                        .limit(min(batch, limit - removed))
+                    ).all()
+                ]
+                if not stale:
+                    break
+                session.execute(delete(Quote).where(Quote.id.in_(stale)))
+                removed += len(stale)
 
         if removed:
             logger.info("Очистка: удалено %s устаревших срезов котировок", removed)
