@@ -470,3 +470,45 @@ class TestAccrualSeries:
         assert export_service._accrual_series(
             self.ITEM, [date(2026, 8, 12)], ["wa_price"], self.BARS
         ) == {}
+
+
+class TestCouponBenchmark:
+    """К чему привязан плавающий купон — колонка, фильтр и название базы."""
+
+    def test_known_codes_get_human_names(self):
+        assert bonds_service.benchmark_title("RREFKEYR") == "Ключевая ставка"
+        assert bonds_service.benchmark_title("RUONIA") == "RUONIA"
+        assert bonds_service.benchmark_title("CPI") == "Инфляция (ИПЦ)"
+
+    def test_unknown_code_is_shown_as_is(self):
+        """Прятать незнакомую базу нельзя: пустая ячейка соврала бы."""
+        assert bonds_service.benchmark_title("NEWBASE2030") == "NEWBASE2030"
+
+    def test_no_benchmark_gives_nothing(self):
+        assert bonds_service.benchmark_title(None) is None
+        assert bonds_service.benchmark_title("") is None
+
+    def test_base_reads_as_rate_plus_margin(self):
+        assert bonds_service.coupon_base_title("RREFKEYR", 2.0) == "Ключевая ставка + 2,00%"
+        assert bonds_service.coupon_base_title("RUONIA", 1.25) == "RUONIA + 1,25%"
+
+    def test_negative_margin_is_a_discount(self):
+        assert bonds_service.coupon_base_title("RUONIA", -0.5) == "RUONIA − 0,50%"
+
+    def test_zero_margin_is_left_out(self):
+        """«RUONIA + 0,00%» — лишний шум, база и так сказана."""
+        assert bonds_service.coupon_base_title("RUONIA", 0.0) == "RUONIA"
+        assert bonds_service.coupon_base_title("RUONIA", None) == "RUONIA"
+
+    def test_analysis_table_shows_the_base(self):
+        codes = {column["code"] for column in bonds_service.ANALYSIS_COLUMNS}
+        assert {"coupon_base", "coupon_benchmark_title", "coupon_margin"} <= codes
+
+    def test_export_offers_the_base(self):
+        codes = {param.code for param in export_service.PARAMS}
+        assert {"coupon_base", "coupon_benchmark_title", "coupon_margin"} <= codes
+
+    def test_base_is_not_aggregated_over_the_period(self):
+        """База купона не зависит от даты — «среднее за период» было бы бредом."""
+        for code in ("coupon_base", "coupon_benchmark_title", "coupon_margin"):
+            assert export_service.PARAMS_BY_CODE[code].computed is True

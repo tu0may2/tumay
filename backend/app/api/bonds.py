@@ -29,6 +29,9 @@ def _filters(
     list_level: list[int] | None = Query(None, description="Уровни листинга: 1, 2, 3"),
     currency: list[str] | None = Query(None, description="Валюта: SUR, USD, CNY…"),
     coupon_type: list[str] | None = Query(None, description="fixed | float | unknown"),
+    benchmark: list[str] | None = Query(
+        None, description="База купона: RREFKEYR, RUONIA, CPI… или none — без привязки"
+    ),
     has_offer: bool | None = Query(None),
     has_amortization: bool | None = Query(None),
     max_risk_score: float | None = Query(None, ge=0, le=100),
@@ -49,6 +52,7 @@ def _filters(
         "list_levels": list_level,
         "currencies": [item.upper() for item in currency] if currency else None,
         "coupon_types": coupon_type,
+        "benchmarks": benchmark,
         "has_offer": has_offer,
         "has_amortization": has_amortization,
         "max_risk_score": max_risk_score,
@@ -131,12 +135,26 @@ def filter_options(session: Session = Depends(get_session)) -> dict[str, Any]:
         .distinct()
     ).scalars()
 
+    # Базы купона: показываем только те, что реально встретились в данных —
+    # список всех мыслимых кодов был бы длиннее и бесполезнее
+    benchmarks = session.execute(
+        select(Instrument.coupon_benchmark)
+        .where(
+            Instrument.kind == "bond", Instrument.coupon_benchmark.isnot(None)
+        )
+        .distinct()
+    ).scalars()
+
     return {
         "currencies": sorted({c for c in currencies if c}),
         "bond_types": sorted({b for b in bond_types if b}),
         "coupon_types": [
             {"code": code, "title": title}
             for code, title in bonds_service.COUPON_TITLES.items()
+        ],
+        "benchmarks": [
+            {"code": code, "title": bonds_service.benchmark_title(code)}
+            for code in sorted({b for b in benchmarks if b})
         ],
         "list_levels": [1, 2, 3],
     }

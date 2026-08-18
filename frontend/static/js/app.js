@@ -13,6 +13,8 @@
     bondMode: 'screen',
     curveTilt: 'scenarios',
     analysisLoaded: false,
+    // Сортировка таблицы облигаций: по какому полю и в какую сторону
+    analysisSort: { by: 'yield_pct', order: 'desc' },
     screens: [],
     limitKinds: [],
     picked: { instruments: {}, analysis: {} },
@@ -239,7 +241,23 @@
       return;
     }
 
-    const head = columns.map((col) => `<th class="${col.className || ''}">${col.title}</th>`).join('');
+    // Заголовок сортируемой колонки кликабелен, а стрелка показывает,
+    // по какому полю и в какую сторону идёт сортировка сейчас
+    const sort = options.sort;
+    const head = columns
+      .map((col) => {
+        const classes = [col.className || ''];
+        if (!col.sortBy || !sort) {
+          return `<th class="${classes.join(' ')}">${col.title}</th>`;
+        }
+        classes.push('sortable');
+        const active = sort.by === col.sortBy;
+        if (active) classes.push('sortable--active');
+        const arrow = active ? (sort.order === 'asc' ? '▲' : '▼') : '⇅';
+        return `<th class="${classes.join(' ')}" data-sort="${col.sortBy}"
+                    title="Отсортировать по столбцу">${col.title} <span class="sortable__mark">${arrow}</span></th>`;
+      })
+      .join('');
     const body = rows
       .map((row, index) => {
         const cells = columns
@@ -252,6 +270,19 @@
       .join('');
 
     container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+
+    if (options.sort && options.onSort) {
+      container.querySelectorAll('th[data-sort]').forEach((th) => {
+        th.addEventListener('click', () => {
+          const field = th.dataset.sort;
+          // Первый клик по новому столбцу — по убыванию: чаще нужен
+          // максимум, а не минимум. Повторный переворачивает порядок
+          const order = options.sort.by === field && options.sort.order === 'desc'
+            ? 'asc' : 'desc';
+          options.onSort(field, order);
+        });
+      });
+    }
 
     if (options.onRowClick) {
       container.querySelectorAll('tbody tr').forEach((tr) => {
@@ -290,6 +321,8 @@
         label: 'Ключевая ставка ЦБ',
         value: overview.key_rate ? fmt.pct(overview.key_rate.value, 2) : '—',
         meta: overview.key_rate ? `на ${fmt.date(overview.key_rate.date)}` : 'нет данных',
+        action: 'rate-calendar',
+        hint: 'Календарь заседаний Банка России по ключевой ставке',
       },
       {
         label: 'RUONIA',
@@ -325,12 +358,18 @@
 
     kpiGrid.innerHTML = cards
       .map((card) => `
-        <div class="kpi">
+        <div class="kpi${card.action ? ' kpi--clickable' : ''}"${
+          card.action ? ` data-action="${card.action}" title="${fmt.esc(card.hint || '')}"` : ''
+        }>
           <div class="kpi__label">${card.label}</div>
           <div class="kpi__value">${card.value}</div>
           <div class="kpi__meta">${card.meta || ''}</div>
         </div>`)
       .join('');
+
+    kpiGrid.querySelectorAll('[data-action="rate-calendar"]').forEach((tile) => {
+      tile.addEventListener('click', openRateCalendar);
+    });
 
     $('#status').textContent = overview.updated_at
       ? `срез ${fmt.dateTime(overview.updated_at)}`
@@ -656,7 +695,7 @@
         { title: 'Бумага', render: (row) => secCell(row) },
         { title: 'Цена', className: 'num', render: (row) => fmt.price(row.last) },
         { title: 'Изм.', className: 'num', render: (row) => changeCell(row.change_pct) },
-        { title: 'Оборот, ₽', className: 'num', render: (row) => fmt.money(row.turnover) },
+        { title: 'Оборот, ₽', className: 'num', sortBy: 'turnover', render: (row) => fmt.money(row.turnover) },
         { title: 'Объём, шт', className: 'num', render: (row) => fmt.int(row.volume) },
         { title: 'Сделок', className: 'num', render: (row) => fmt.int(row.num_trades) },
         { title: 'Спред', className: 'num', render: (row) => fmt.pct(row.spread_pct, 3) },
@@ -743,11 +782,16 @@
       max_risk_score: num('#a-risk'),
       has_offer: bool('#a-offer'),
       has_amortization: bool('#a-amort'),
-      sort_by: $('#a-sort').value,
+      // Сортировка идёт на сервере: он видит весь рынок, а на экране
+      // только первые триста строк — иначе «сверху» оказалось бы не то
+      sort_by: state.analysisSort.by || $('#a-sort').value,
+      order: state.analysisSort.order,
       limit: 300,
     };
     const coupon = pick('#a-coupon');
     if (coupon) params.coupon_type = [coupon];
+    const benchmark = pick('#a-benchmark');
+    if (benchmark) params.benchmark = [benchmark];
     const level = pick('#a-level');
     if (level) params.list_level = [level];
     const currency = pick('#a-currency');
@@ -777,6 +821,14 @@
           option.textContent = code;
           select.appendChild(option);
         });
+        // Базы купона — только встретившиеся в данных
+        const benchmarks = $('#a-benchmark');
+        (options.benchmarks || []).forEach((item) => {
+          const option = document.createElement('option');
+          option.value = item.code;
+          option.textContent = item.title;
+          benchmarks.appendChild(option);
+        });
       }
 
       const data = await api.bondAnalysis(analysisParams());
@@ -790,10 +842,10 @@
         pickColumn('analysis'),
         { title: 'Выпуск', render: (row) => secCell(row) },
         { title: 'ISIN', render: (row) => `<span class="dim" style="font-family:var(--mono);font-size:11px">${fmt.esc(row.isin || '—')}</span>` },
-        { title: 'Погашение', render: (row) => `<span class="dim">${fmt.date(row.maturity_date)}</span>` },
-        { title: 'Лет', className: 'num', render: (row) => fmt.num(row.years_to_maturity, 2) },
-        { title: 'Цена, %', className: 'num', render: (row) => fmt.price(row.last) },
-        { title: 'СВЦ вчера', className: 'num', render: (row) => fmt.price(row.prev_wa_price) },
+        { title: 'Погашение', sortBy: 'maturity_date', render: (row) => `<span class="dim">${fmt.date(row.maturity_date)}</span>` },
+        { title: 'Лет', className: 'num', sortBy: 'years_to_maturity', render: (row) => fmt.num(row.years_to_maturity, 2) },
+        { title: 'Цена, %', className: 'num', sortBy: 'last', render: (row) => fmt.price(row.last) },
+        { title: 'СВЦ вчера', className: 'num', sortBy: 'prev_wa_price', render: (row) => fmt.price(row.prev_wa_price) },
         {
           title: 'НКД расч.',
           className: 'num',
@@ -816,21 +868,35 @@
             }</span>`;
           },
         },
-        { title: 'Полная цена', className: 'num', render: (row) => fmt.num(row.dirty_price, 2) },
-        { title: 'Доходность', className: 'num', render: (row) => `<b>${fmt.pct(row.yield_pct)}</b>` },
-        { title: 'Текущая', className: 'num', render: (row) => fmt.pct(row.current_yield_pct) },
+        { title: 'Полная цена', className: 'num', sortBy: 'dirty_price', render: (row) => fmt.num(row.dirty_price, 2) },
+        { title: 'Доходность', className: 'num', sortBy: 'yield_pct', render: (row) => `<b>${fmt.pct(row.yield_pct)}</b>` },
+        { title: 'Текущая', className: 'num', sortBy: 'current_yield_pct', render: (row) => fmt.pct(row.current_yield_pct) },
         {
           title: 'После налога',
           className: 'num',
           render: (row) => `<span class="dim">${fmt.pct(row.after_tax_yield_pct)}</span>`,
         },
-        { title: 'Премия', className: 'num', render: (row) => premiumCell(row.spread_to_curve_bp) },
-        { title: 'Дюрация', className: 'num', render: (row) => (fmt.isNum(row.duration_years) ? fmt.num(row.duration_years, 2) + ' л' : '—') },
+        { title: 'Премия', className: 'num', sortBy: 'spread_to_curve_bp', render: (row) => premiumCell(row.spread_to_curve_bp) },
+        { title: 'Дюрация', className: 'num', sortBy: 'duration_years', render: (row) => (fmt.isNum(row.duration_years) ? fmt.num(row.duration_years, 2) + ' л' : '—') },
         { title: 'Тип купона', render: (row) => `<span class="badge">${fmt.esc(row.coupon_type_title || '—')}</span>` },
+        {
+          title: 'База купона',
+          sortBy: 'coupon_benchmark',
+          render: (row) => {
+            if (row.coupon_base) {
+              return `<span class="badge badge--accent" title="Плавающий купон привязан к этой ставке">${fmt.esc(row.coupon_base)}</span>`;
+            }
+            // Пусто по двум разным причинам, и их стоит различать
+            const floating = row.coupon_type === 'float' || row.coupon_type === 'structured';
+            return floating
+              ? '<span class="dim" title="Карточка выпуска ещё не запрошена — база появится после следующего сбора">загружается…</span>'
+              : '<span class="dim">—</span>';
+          },
+        },
         { title: 'Аморт.', render: (row) => (row.has_amortization ? '<span class="badge badge--accent">да</span>' : '<span class="dim">нет</span>') },
         { title: 'Оферта', render: (row) => (row.has_offer ? `<span class="badge badge--warn">${row.offer_date ? fmt.date(row.offer_date) : 'есть'}</span>` : '<span class="dim">нет</span>') },
         { title: 'Оборот, ₽', className: 'num', render: (row) => fmt.money(row.turnover) },
-        { title: 'Ликв.', className: 'num', render: (row) => liquidityCell(row.liquidity_score) },
+        { title: 'Ликв.', className: 'num', sortBy: 'liquidity_score', render: (row) => liquidityCell(row.liquidity_score) },
         { title: 'Ур.', className: 'num', render: (row) => `<span class="badge">${row.list_level || '—'}</span>` },
         {
           title: 'Риск',
@@ -846,6 +912,14 @@
         rowKey: (row) => row.secid,
         onRowClick: openInstrument,
         emptyMessage: 'Нет выпусков под заданные условия — ослабьте фильтры',
+        sort: state.analysisSort,
+        onSort: (by, order) => {
+          state.analysisSort = { by, order };
+          // Выпадающий список сортировки держим в согласии с таблицей
+          const select = $('#a-sort');
+          if (select && [...select.options].some((o) => o.value === by)) select.value = by;
+          renderAnalysis();
+        },
       });
       wirePicking(container, 'analysis');
 
@@ -3156,6 +3230,120 @@
     }
   }
 
+
+  // ------------------------------------------------------------------
+  // Заседания Банка России по ключевой ставке
+  // ------------------------------------------------------------------
+  //
+  // Календарь открывается кликом по плитке ставки в обзоре рынка:
+  // когда следующее решение, будет ли к нему прогноз, и чем закончились
+  // предыдущие заседания.
+
+  function meetingCard(meeting, highlight) {
+    const badges = [];
+    if (meeting.kind === 'extraordinary') {
+      badges.push('<span class="badge badge--warn">внеочередное</span>');
+    }
+    if (meeting.with_forecast) {
+      badges.push('<span class="badge badge--accent" title="Публикуется среднесрочный прогноз Банка России">опорное</span>');
+    }
+
+    let verdict = '';
+    if (meeting.past && fmt.isNum(meeting.rate)) {
+      const change = meeting.rate_change;
+      if (!fmt.isNum(change) || change === 0) {
+        verdict = `<span class="dim">ставка сохранена — ${fmt.pct(meeting.rate, 2)}</span>`;
+      } else {
+        const cls = change < 0 ? 'up' : 'down';
+        const word = change < 0 ? 'снижена' : 'повышена';
+        verdict = `<span class="${cls}">${word} на ${fmt.num(Math.abs(change), 2)} п.п. → ${fmt.pct(meeting.rate, 2)}</span>`;
+      }
+    } else if (!meeting.past) {
+      const days = meeting.days;
+      verdict = `<span class="dim">${days === 0 ? 'сегодня' : `через ${days} ${fmt.plural(days, 'день', 'дня', 'дней')}`}</span>`;
+    }
+
+    const links = (meeting.links || [])
+      .map((link) => `<a href="${fmt.esc(link.url)}" target="_blank" rel="noopener">${fmt.esc(link.title)}</a>`)
+      .join(' · ');
+
+    return `
+      <div class="meeting${highlight ? ' meeting--next' : ''}">
+        <div class="meeting__date">
+          ${fmt.date(meeting.date)}
+          ${highlight ? '<span class="badge badge--up">ближайшее</span>' : ''}
+          ${badges.join(' ')}
+        </div>
+        <div class="meeting__verdict">${verdict}</div>
+        ${links ? `<div class="meeting__links">${links}</div>` : ''}
+      </div>`;
+  }
+
+  async function openRateCalendar() {
+    const drawer = $('#drawer');
+    $('#drawer-title').textContent = 'Ключевая ставка Банка России';
+    $('#drawer-sub').textContent = 'Календарь заседаний Совета директоров';
+    const body = $('#drawer-body');
+    loading(body);
+    drawer.hidden = false;
+
+    let data;
+    try {
+      data = await api.rateCalendar();
+    } catch (error) {
+      return failure(body, error);
+    }
+
+    if (!data.upcoming.length && !data.past.length) {
+      return charts.empty(body, 'Календарь ещё не загружен — нажмите «Собрать данные»');
+    }
+
+    const next = data.next;
+    const head = `
+      <div class="stat-grid">
+        <div class="stat">
+          <div class="stat__label">Ставка сейчас</div>
+          <div class="stat__value">${fmt.pct(data.current_rate, 2)}</div>
+          <div class="stat__label" style="text-transform:none">на ${fmt.date(data.current_rate_date)}</div>
+        </div>
+        <div class="stat">
+          <div class="stat__label">Следующее заседание</div>
+          <div class="stat__value">${next ? fmt.date(next.date) : '—'}</div>
+          <div class="stat__label" style="text-transform:none">${
+            next
+              ? (next.days === 0 ? 'сегодня' : `через ${next.days} ${fmt.plural(next.days, 'день', 'дня', 'дней')}`)
+              : 'календарь не опубликован'
+          }</div>
+        </div>
+        <div class="stat">
+          <div class="stat__label">Со среднесрочным прогнозом</div>
+          <div class="stat__value">${
+            (data.upcoming.find((m) => m.with_forecast) || {}).date
+              ? fmt.date(data.upcoming.find((m) => m.with_forecast).date)
+              : '—'
+          }</div>
+          <div class="stat__label" style="text-transform:none">опорное заседание</div>
+        </div>
+      </div>`;
+
+    const upcoming = data.upcoming
+      .map((meeting, index) => meetingCard(meeting, index === 0))
+      .join('');
+    const past = data.past.map((meeting) => meetingCard(meeting, false)).join('');
+
+    body.innerHTML = `
+      ${head}
+      <h3 class="section-title" style="margin-top:18px">Предстоящие заседания</h3>
+      ${upcoming || '<div class="empty">Календарь на следующий период ещё не опубликован</div>'}
+      <h3 class="section-title" style="margin-top:18px">Прошедшие решения</h3>
+      ${past || '<div class="empty">Нет данных</div>'}
+      <p class="card__note" style="border:none;padding:12px 0 0">
+        Источник: ${fmt.esc(data.source)}. Опорное заседание — то, к которому
+        Банк России публикует среднесрочный прогноз: на нём чаще пересматривают
+        траекторию ставки.
+      </p>`;
+  }
+
   function closeDrawer() {
     $('#drawer').hidden = true;
   }
@@ -3361,9 +3549,14 @@
      '#a-matfrom', '#a-matto', '#a-turnover', '#a-risk'].forEach((selector) =>
       on(selector, 'input', onAnalysisFilter)
     );
-    ['#a-coupon', '#a-level', '#a-currency', '#a-offer', '#a-amort', '#a-sort'].forEach(
+    ['#a-coupon', '#a-benchmark', '#a-level', '#a-currency', '#a-offer', '#a-amort'].forEach(
       (selector) => on(selector, 'change', renderAnalysis)
     );
+    // Список сортировки и стрелки в шапке таблицы — одно и то же состояние
+    on('#a-sort', 'change', (event) => {
+      state.analysisSort = { by: event.target.value, order: state.analysisSort.order };
+      renderAnalysis();
+    });
     on('#analysis-xlsx', 'click', () => downloadAnalysis('xlsx'));
     on('#analysis-csv', 'click', () => downloadAnalysis('csv'));
     on('#a-save-screen', 'click', saveScreen);

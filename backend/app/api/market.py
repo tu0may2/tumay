@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..models import Bar, CorpAction, FxRate, Instrument, MacroRate, Quote
-from ..services import accrual, analytics, intraday, series
+from ..services import accrual, analytics, intraday, keyrate, series
 from ..services.tabular import to_csv, to_xlsx
 from ..sources.moex import BOARD_SPECS
 
@@ -370,6 +370,18 @@ def download_series(
         media_type=media_type,
         headers={"Content-Disposition": disposition},
     )
+
+
+@router.get("/rates/calendar", summary="Заседания ЦБ по ключевой ставке")
+def get_rate_calendar(
+    history: int = Query(
+        keyrate.DEFAULT_HISTORY, ge=1, le=40,
+        description="Сколько прошедших заседаний показать",
+    ),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Ближайшее заседание, расписание на год вперёд и прошлые решения."""
+    return keyrate.schedule(session, history)
 
 
 @router.get("/boards", summary="Доступные режимы торгов")

@@ -319,6 +319,25 @@ class MoexSource(HttpSource):
             "offers": rows_to_dicts(payload.get("offers")),
         }
 
+    async def fetch_security_card(self, secid: str) -> dict[str, Any]:
+        """Карточка выпуска: поля, которых нет в биржевом срезе.
+
+        Главное здесь — «Бенчмарк купона» и «Маржа купона»: к чему привязана
+        ставка флоатера и сколько к ней прибавляется. По срезу доски этого
+        не узнать, а без базы плавающий купон — просто число без смысла.
+        """
+        payload = await self.get_json(
+            f"/securities/{secid}.json",
+            **{"iss.meta": "off", "iss.only": "description"},
+        )
+        rows = rows_to_dicts(payload.get("description"))
+        # Разворачиваем «имя-значение» в обычный словарь по системному имени
+        return {
+            row.get("name"): row.get("value")
+            for row in rows
+            if row.get("name") is not None
+        }
+
     async def fetch_index_composition(self, index_id: str = "IMOEX") -> list[dict]:
         """Состав и веса индекса — ориентир для лимитов концентрации."""
         payload = await self.get_json(

@@ -67,6 +67,16 @@ class Instrument(Base):
     next_coupon_date: Mapped[date | None] = mapped_column(Date)
     accrued_interest: Mapped[float | None] = mapped_column(Float)
     bond_type: Mapped[str | None] = mapped_column(String(64))
+    bond_subtype: Mapped[str | None] = mapped_column(String(64))
+
+    # К чему привязан купон флоатера: код базы (RREFKEYR, RUONIA, RUSFAR…)
+    # и надбавка к ней в процентных пунктах. В биржевом срезе этих полей нет,
+    # они приходят из карточки выпуска и заполняются сборщиком отдельно
+    coupon_benchmark: Mapped[str | None] = mapped_column(String(32), index=True)
+    coupon_margin: Mapped[float | None] = mapped_column(Float)
+    #: Когда карточку выпуска смотрели в последний раз — чтобы не ходить
+    #: за одним и тем же по кругу и видеть, что ещё не заполнено
+    benchmark_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), onupdate=func.now()
@@ -225,6 +235,33 @@ class CurvePoint(Base):
     curve_date: Mapped[date] = mapped_column(Date, index=True)
     period_years: Mapped[float] = mapped_column(Float)
     value: Mapped[float] = mapped_column(Float)
+
+
+class RateMeeting(Base):
+    """Заседание Совета директоров Банка России по ключевой ставке.
+
+    Календарь публикуется на год вперёд, поэтому по нему видно и когда
+    ждать следующего решения, и чем закончились прошлые.
+    """
+
+    __tablename__ = "rate_meetings"
+    __table_args__ = (
+        UniqueConstraint("meeting_date", "title", name="uq_meeting_date_title"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    meeting_date: Mapped[date] = mapped_column(Date, index=True)
+    title: Mapped[str] = mapped_column(String(256))
+    #: regular — плановое, extraordinary — внеочередное, other — прочие события
+    #: календаря (доклад о ДКП, резюме обсуждения)
+    kind: Mapped[str] = mapped_column(String(16), default="regular")
+    #: Заседание с публикацией среднесрочного прогноза — «опорное»
+    with_forecast: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Ссылки на пресс-релиз, прогноз и пресс-конференцию, JSON-строкой
+    links: Mapped[str | None] = mapped_column(Text)
+    #: Ставка, установленная на этом заседании, и её изменение в п.п.
+    rate: Mapped[float | None] = mapped_column(Float)
+    rate_change: Mapped[float | None] = mapped_column(Float)
 
 
 class CorpAction(Base):

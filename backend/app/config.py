@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     fx_history_codes: tuple[str, ...] = ("USD", "CNY", "EUR")
     # Индексы, история которых нужна для графиков обзора рынка
     tracked_indices: tuple[str, ...] = ("IMOEX", "RGBI")
+    # Сколько карточек выпусков добирать за один цикл сбора: база купона
+    # отдаётся по одной бумаге, поэтому рынок заполняется порциями
+    benchmark_batch_size: int = 150
 
     # Какие рынки собираем: board -> описание
     shares_board: str = "TQBR"

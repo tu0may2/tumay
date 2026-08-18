@@ -58,6 +58,43 @@ _TYPE_MARKERS: tuple[tuple[str, str], ...] = (
 )
 
 
+#: К чему биржа привязывает купон флоатера. Коды свои у каждой базы, а в
+#: таблице нужно человеческое имя — иначе «RREFKEYR» ни о чём не говорит.
+BENCHMARK_TITLES: dict[str, str] = {
+    "RREFKEYR": "Ключевая ставка",
+    "RUONIA": "RUONIA",
+    "RUONIA3M": "RUONIA за 3 месяца",
+    "RUONIA6M": "RUONIA за 6 месяцев",
+    "RUONIA_IND": "Индекс RUONIA",
+    "RUONIA_AVG": "RUONIA средняя",
+    "RUSFAR": "RUSFAR",
+    "RUSFAR3M": "RUSFAR за 3 месяца",
+    "CPI": "Инфляция (ИПЦ)",
+    "SOFR": "SOFR",
+    "SU_OFZ": "Доходность ОФЗ",
+    "ZR_YLD_CRV": "Кривая бескупонной доходности",
+    "IPC": "Инфляция (ИПЦ)",
+}
+
+
+def benchmark_title(code: str | None) -> str | None:
+    """Название базы купона. Незнакомый код показываем как есть, не пряча."""
+    if not code:
+        return None
+    return BENCHMARK_TITLES.get(code.upper(), code)
+
+
+def coupon_base_title(code: str | None, margin: float | None) -> str | None:
+    """Строка вида «Ключевая ставка + 2,00%» — то, как читают привязку."""
+    title = benchmark_title(code)
+    if title is None:
+        return None
+    if margin is None or margin == 0:
+        return title
+    sign = "+" if margin > 0 else "−"
+    return f"{title} {sign} {abs(margin):.2f}%".replace(".", ",")
+
+
 def _coupon_type_from_moex(bond_type: str | None) -> str:
     if not bond_type:
         return COUPON_UNKNOWN
@@ -199,6 +236,7 @@ def analyse(
     list_levels: Sequence[int] | None = None,
     currencies: Sequence[str] | None = None,
     coupon_types: Sequence[str] | None = None,
+    benchmarks: Sequence[str] | None = None,
     has_offer: bool | None = None,
     has_amortization: bool | None = None,
     max_risk_score: float | None = None,
@@ -291,6 +329,15 @@ def analyse(
             else "точно"
         )
 
+        # К чему привязан плавающий купон. Пока карточка выпуска не
+        # запрошена, поле пустое — это видно и в таблице, и в фильтре
+        row["coupon_benchmark"] = instrument.coupon_benchmark
+        row["coupon_benchmark_title"] = benchmark_title(instrument.coupon_benchmark)
+        row["coupon_margin"] = instrument.coupon_margin
+        row["coupon_base"] = coupon_base_title(
+            instrument.coupon_benchmark, instrument.coupon_margin
+        )
+
         rows.append(row)
 
     def _keep(row: dict[str, Any]) -> bool:
@@ -323,6 +370,13 @@ def analyse(
             return False
         if list_levels and row.get("list_level") not in list_levels:
             return False
+        if benchmarks:
+            # «none» — выпуски без привязки: фиксированный купон и те, чью
+            # карточку биржа ещё не отдала
+            wanted = {str(item).upper() for item in benchmarks}
+            code = (row.get("coupon_benchmark") or "").upper()
+            if not (code in wanted or (not code and "NONE" in wanted)):
+                return False
         if currencies and (row.get("currency") or "").upper() not in currencies:
             return False
         if coupon_types and row.get("coupon_type") not in coupon_types:
@@ -375,6 +429,9 @@ ANALYSIS_COLUMNS: tuple[dict[str, Any], ...] = (
     {"code": "z_spread_bp", "title": "Z-спред, бп", "kind": "number", "digits": 0},
     {"code": "duration_years", "title": "Дюрация, лет", "kind": "number", "digits": 2},
     {"code": "coupon_type_title", "title": "Тип купона", "kind": "text"},
+    {"code": "coupon_base", "title": "База купона", "kind": "text"},
+    {"code": "coupon_benchmark_title", "title": "Привязка к", "kind": "text"},
+    {"code": "coupon_margin", "title": "Надбавка к базе, п.п.", "kind": "number", "digits": 2},
     {"code": "coupon_period", "title": "Период купона, дней", "kind": "number", "digits": 0},
     {"code": "next_coupon_date", "title": "Ближайший купон", "kind": "date"},
     {"code": "has_amortization", "title": "Амортизация", "kind": "text"},

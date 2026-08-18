@@ -90,6 +90,15 @@ PARAMS: tuple[Param, ...] = (
     Param("duration_days", "Дюрация, дней", "Облигации", "duration_days",
           digits=0, agg="last"),
     Param("face_value", "Номинал", "Облигации", "face_value", agg="last"),
+    Param("coupon_base", "База купона", "Облигации", "",
+          kind="text", agg="last", computed=True,
+          hint="К чему привязан плавающий купон и какая надбавка: "
+               "например «Ключевая ставка + 2,00%». У фиксированного купона пусто"),
+    Param("coupon_benchmark_title", "Привязка к", "Облигации", "",
+          kind="text", agg="last", computed=True,
+          hint="Только база, без надбавки — так удобнее фильтровать в Excel"),
+    Param("coupon_margin", "Надбавка к базе, п.п.", "Облигации", "",
+          digits=2, agg="last", computed=True),
 )
 
 PARAMS_BY_CODE = {param.code: param for param in PARAMS}
@@ -586,6 +595,41 @@ def _daily_step(
     return (published[last] - published[previous]) / days if days else None
 
 
+def _reference_values(
+    item: Resolved, dates: Sequence[date], codes: Sequence[str]
+) -> dict[date, dict[str, Any]]:
+    """Справочные поля выпуска, одинаковые во всех строках.
+
+    База купона не зависит от даты, но кладётся в тот же словарь «дата →
+    значения», что и НКД: так у ``build_rows`` остаётся один источник
+    расчётных колонок вместо двух.
+    """
+    wanted = {"coupon_base", "coupon_benchmark_title", "coupon_margin"} & set(codes)
+    if not wanted or item.kind != "bond" or not dates:
+        return {}
+
+    from .bonds import benchmark_title, coupon_base_title
+
+    with session_scope() as session:
+        instrument = session.execute(
+            select(Instrument).where(
+                Instrument.secid == item.secid, Instrument.board == item.board
+            )
+        ).scalar_one_or_none()
+        if instrument is None:
+            return {}
+
+        values = {
+            "coupon_base": coupon_base_title(
+                instrument.coupon_benchmark, instrument.coupon_margin
+            ),
+            "coupon_benchmark_title": benchmark_title(instrument.coupon_benchmark),
+            "coupon_margin": instrument.coupon_margin,
+        }
+
+    return {day: dict(values) for day in dates}
+
+
 def date_range(date_from: date, date_to: date) -> list[date]:
     """Все календарные дни периода.
 
@@ -722,6 +766,10 @@ async def run_query(
         # Считаем после _persist: бумага уже в справочнике, и по ней доступны
         # график купонов и последний срез
         accrual = _accrual_series(item, period, codes, bars)
+        # Справочные поля кладём в тот же словарь: build_rows берёт все
+        # расчётные колонки из одного места
+        for day, values in _reference_values(item, period, codes).items():
+            accrual.setdefault(day, {}).update(values)
         if not bars and not accrual:
             # Ни торгов, ни купонов — строки были бы пустыми
             continue

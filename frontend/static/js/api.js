@@ -124,6 +124,7 @@
     calendar: (params) => request('/api/calendar', { params }),
     fx: (params) => request('/api/fx', { params }),
     rates: (params) => request('/api/rates', { params }),
+    rateCalendar: (params) => request('/api/rates/calendar', { params }),
     seriesCatalog: () => request('/api/series/catalog'),
     series: (chart, params) => request(`/api/series/${encodeURIComponent(chart)}`, { params }),
     seriesDownload: (chart, params) =>

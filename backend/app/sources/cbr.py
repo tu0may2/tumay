@@ -47,6 +47,44 @@ _CELL_RE = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.S)
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
+#: Разбор календаря заседаний: страница ЦБ размечена блоками «день → события»
+_SPACES_RE = re.compile(r"\s+")
+_DAY_RE = re.compile(
+    r'<div class="main-events_day">(.*?)(?=<div class="main-events_day">'
+    r'|<div class="calendar-main-events">|\Z)'
+)
+_DATE_RE = re.compile(r'<div class="date[^"]*">(.*?)</div>')
+_TITLE_RE = re.compile(r'<div class="title">(.*?)(?:<div class="icon_wrapper|</div>)', re.S)
+_LINK_RE = re.compile(r'<a href="([^"]+)"[^>]*>(.*?)</a>', re.S)
+
+_RU_MONTHS = {
+    "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
+    "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11,
+    "декабря": 12,
+}
+
+
+def _parse_russian_date(text: str) -> date | None:
+    """«13 февраля 2026 года» → дата."""
+    match = re.match(r"(\d{1,2})\s+([а-яё]+)\s+(\d{4})", text.strip().lower())
+    if match is None:
+        return None
+    month = _RU_MONTHS.get(match.group(2))
+    if month is None:
+        return None
+    try:
+        return date(int(match.group(3)), month, int(match.group(1)))
+    except ValueError:
+        return None
+
+
+def _absolute_url(href: str) -> str:
+    """Ссылки на странице относительные — приводим к полным."""
+    if href.startswith("http"):
+        return href
+    return f"{settings.cbr_base_url.rstrip('/')}/{href.lstrip('/')}"
+
+
 def _localname(tag: str) -> str:
     """Имя тега без пространства имён."""
     return tag.rsplit("}", 1)[-1]
@@ -242,6 +280,75 @@ class CbrSource(HttpSource):
                     }
                 )
         return sorted(series, key=lambda item: (item["rate_date"], item["code"]))
+
+    async def fetch_rate_calendar(self) -> list[dict[str, Any]]:
+        """Календарь заседаний Совета директоров по ключевой ставке.
+
+        Машиночитаемого канала у ЦБ для него нет, поэтому разбираем страницу
+        календаря: она размечена одинаково много лет и содержит и прошедшие
+        заседания, и запланированные на год вперёд.
+
+        Каждое событие несёт дату, название, признак «с публикацией
+        среднесрочного прогноза» (в вёрстке — иконка important; такие
+        заседания называют опорными) и ссылки на пресс-релиз, прогноз и
+        пресс-конференцию.
+        """
+        try:
+            response = await self.get("/dkp/cal_mp/")
+        except Exception as exc:  # noqa: BLE001 — календарь не критичен
+            logger.warning("cbr: календарь заседаний недоступен (%s)", exc)
+            return []
+
+        text = _SPACES_RE.sub(" ", response.text).replace("&nbsp;", " ")
+        events: list[dict[str, Any]] = []
+        for block in _DAY_RE.findall(text):
+            match = _DATE_RE.search(block)
+            if match is None:
+                continue
+            meeting_date = _parse_russian_date(_TAG_RE.sub("", match.group(1)).strip())
+            if meeting_date is None:
+                continue
+
+            title = ""
+            title_match = _TITLE_RE.search(block)
+            if title_match:
+                title = _TAG_RE.sub("", title_match.group(1)).strip()
+            if not title:
+                continue
+
+            links = [
+                {"title": _TAG_RE.sub("", label).strip(), "url": _absolute_url(href)}
+                for href, label in _LINK_RE.findall(block)
+                if _TAG_RE.sub("", label).strip()
+            ]
+
+            lowered = title.lower()
+            if "заседание" in lowered and "ключевой ставке" in lowered:
+                kind = "extraordinary" if "внеочередное" in lowered else "regular"
+            else:
+                # Доклад о ДКП, резюме обсуждения и прочие события календаря
+                kind = "other"
+
+            events.append(
+                {
+                    "meeting_date": meeting_date,
+                    "title": title,
+                    "kind": kind,
+                    "with_forecast": "icon-important" in block,
+                    "links": links,
+                }
+            )
+
+        # Одна дата может нести несколько событий — дубли снимаем по паре
+        seen: set[tuple[date, str]] = set()
+        unique: list[dict[str, Any]] = []
+        for event in sorted(events, key=lambda item: item["meeting_date"]):
+            key = (event["meeting_date"], event["title"])
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(event)
+        return unique
 
     async def fetch_currency_ids(self) -> dict[str, str]:
         """Соответствие буквенного кода валюты внутреннему коду ЦБ (R01235 и т.п.).

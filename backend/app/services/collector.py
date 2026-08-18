@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta
@@ -28,6 +29,7 @@ from ..models import (
     Instrument,
     MacroRate,
     Quote,
+    RateMeeting,
     WatchItem,
 )
 from ..sources import CbrSource, MoexSource, NsdSource
@@ -35,6 +37,20 @@ from ..sources.base import rows_to_dicts
 from .analytics import latest_quote_ids
 
 logger = logging.getLogger(__name__)
+
+#: Типы выпусков, где купон известен из среза и карточка не нужна
+_FIXED_COUPON_TYPES = ("Фикс с известным купоном", "Дисконтная облигация")
+
+
+def _to_float(value: Any) -> float | None:
+    """Мягкое приведение: у карточки биржи поля бывают пустыми строками."""
+    if value in (None, ""):
+        return None
+    try:
+        return float(str(value).replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+
 
 #: Поля справочника, которые обновляем при каждом сборе
 _INSTRUMENT_FIELDS = (
@@ -441,6 +457,115 @@ class Collector:
             counter["rows"] = len(found)
             return len(found)
 
+    async def collect_rate_calendar(self) -> int:
+        """Календарь заседаний ЦБ по ключевой ставке.
+
+        Публикуется на год вперёд и меняется редко, поэтому обновляется
+        вместе с остальными справочниками, а не по отдельному расписанию.
+        """
+        with self._run("cbr", "rate_calendar") as counter:
+            async with CbrSource() as cbr:
+                events = await cbr.fetch_rate_calendar()
+
+            if not events:
+                return 0
+
+            rows = [
+                {
+                    "meeting_date": event["meeting_date"],
+                    "title": event["title"],
+                    "kind": event["kind"],
+                    "with_forecast": event["with_forecast"],
+                    "links": json.dumps(event["links"], ensure_ascii=False),
+                }
+                for event in events
+            ]
+            with session_scope() as session:
+                counter["rows"] = _upsert(
+                    session, RateMeeting, rows,
+                    ("meeting_date", "title"),
+                    ("kind", "with_forecast", "links"),
+                )
+            return counter["rows"]
+
+    async def collect_coupon_benchmarks(self, limit: int | None = None) -> int:
+        """К чему привязан купон флоатеров — по одной карточке за запрос.
+
+        В биржевом срезе базы купона нет, а карточка отдаётся по одной
+        бумаге, поэтому справочник заполняется порциями: за один заход
+        берём ограниченное число выпусков, начиная с портфельных и
+        оборотистых. Через несколько циклов сбора рынок закрыт целиком,
+        а биржу мы при этом не заваливаем.
+
+        Повторно карточку не запрашиваем: база купона задана при выпуске и
+        не меняется. Помечаем дату проверки, чтобы не ходить по кругу за
+        теми, у кого базы нет вовсе (у фиксированного купона её и не будет).
+        """
+        limit = limit or settings.benchmark_batch_size
+        with session_scope() as session:
+            pending = [
+                row[0]
+                for row in session.execute(
+                    select(Instrument.secid)
+                    .outerjoin(Quote, Quote.instrument_id == Instrument.id)
+                    .where(
+                        Instrument.kind == "bond",
+                        Instrument.benchmark_checked_at.is_(None),
+                        # Фиксированный купон известен из среза — карточка не нужна
+                        Instrument.bond_type.notin_(_FIXED_COUPON_TYPES),
+                    )
+                    .group_by(Instrument.secid)
+                    # Сначала то, чем торгуют: по этим выпускам данные нужнее
+                    .order_by(func.max(Quote.turnover).desc().nullslast())
+                    .limit(limit)
+                ).all()
+            ]
+
+        if not pending:
+            return 0
+
+        with self._run("moex", "benchmarks") as counter:
+            cards: dict[str, dict[str, Any]] = {}
+            async with MoexSource() as moex:
+                semaphore = asyncio.Semaphore(settings.http_concurrency)
+
+                async def _one(secid: str) -> None:
+                    async with semaphore:
+                        try:
+                            cards[secid] = await moex.fetch_security_card(secid)
+                        except Exception as exc:  # noqa: BLE001 — один выпуск не важен
+                            logger.warning("Карточка %s не получена: %s", secid, exc)
+
+                await asyncio.gather(*(_one(secid) for secid in pending))
+
+            checked = datetime.utcnow()
+            filled = 0
+            with session_scope() as session:
+                for secid in pending:
+                    card = cards.get(secid)
+                    instruments = list(
+                        session.execute(
+                            select(Instrument).where(Instrument.secid == secid)
+                        ).scalars()
+                    )
+                    for instrument in instruments:
+                        if card is None:
+                            # Не достучались — оставляем неотмеченным,
+                            # чтобы попробовать в следующий раз
+                            continue
+                        benchmark = (card.get("COUPON_BENCHMARK") or "").strip() or None
+                        instrument.coupon_benchmark = benchmark
+                        instrument.coupon_margin = _to_float(
+                            card.get("COUPON_BENCHMARK_SPREAD")
+                        )
+                        instrument.bond_subtype = card.get("BOND_SUBTYPE") or None
+                        instrument.benchmark_checked_at = checked
+                    if card is not None and instruments:
+                        filled += 1
+
+            counter["rows"] = filled
+            return filled
+
     async def collect_all(self, *, with_history: bool = True) -> dict[str, int]:
         """Полный цикл сбора. Ошибка одного шага не отменяет остальные."""
         async with self._lock:
@@ -454,6 +579,10 @@ class Collector:
                 steps.append(("benchmarks", self.collect_benchmarks()))
             steps.append(("corp_actions", self.collect_corp_actions()))
             steps.append(("issuers", self.collect_issuers()))
+            # База купона флоатеров: добирается порциями, полное покрытие
+            # набирается за несколько циклов
+            steps.append(("coupon_benchmarks", self.collect_coupon_benchmarks()))
+            steps.append(("rate_calendar", self.collect_rate_calendar()))
 
             for name, coro in steps:
                 try:
