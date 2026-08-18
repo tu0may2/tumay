@@ -63,6 +63,23 @@ def get_instruments(
     )
 
 
+@router.get("/instruments/security-types", summary="Виды бумаг для фильтра")
+def get_security_types(
+    kind: list[str] | None = Query(None, description="share | bond | index | currency"),
+    session: Session = Depends(get_session),
+) -> dict[str, list[dict[str, Any]]]:
+    """Вложенный список видов бумаг, сгруппированный по классу инструмента.
+
+    Отдаёт только виды, реально встретившиеся в загруженных данных — иначе
+    выбор в фильтре часто вёл бы в пустую таблицу.
+
+    Маршрут объявлен раньше ``/instruments/{secid}`` намеренно: FastAPI
+    сопоставляет пути по порядку регистрации, и с обратным порядком запрос
+    сюда подхватывался бы как карточка инструмента с secid="security-types".
+    """
+    return analytics.security_type_catalog(session, kinds=kind)
+
+
 @router.get("/instruments/{secid}", summary="Карточка инструмента")
 def get_instrument(
     secid: str,
@@ -407,14 +424,3 @@ def get_boards(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
     ]
 
 
-@router.get("/instruments/security-types", summary="Виды бумаг для фильтра")
-def get_security_types(
-    kind: list[str] | None = Query(None, description="share | bond | index | currency"),
-    session: Session = Depends(get_session),
-) -> dict[str, list[dict[str, Any]]]:
-    """Вложенный список видов бумаг, сгруппированный по классу инструмента.
-
-    Отдаёт только виды, реально встретившиеся в загруженных данных — иначе
-    выбор в фильтре часто вёл бы в пустую таблицу.
-    """
-    return analytics.security_type_catalog(session, kinds=kind)
