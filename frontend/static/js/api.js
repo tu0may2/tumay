@@ -134,14 +134,6 @@
     runs: (params) => request('/api/collect/runs', { params }),
     collect: (withHistory = true) =>
       request('/api/collect', { method: 'POST', body: { with_history: withHistory } }),
-    derivAssets: () => request('/api/derivatives/assets'),
-    derivFutures: (params) => request('/api/derivatives/futures', { params }),
-    derivExpiries: (asset) => request(`/api/derivatives/expiries/${encodeURIComponent(asset)}`),
-    derivBoard: (asset, params) =>
-      request(`/api/derivatives/board/${encodeURIComponent(asset)}`, { params }),
-    derivPosition: (body) => request('/api/derivatives/position', { method: 'POST', body }),
-    derivCandles: (secid, params) =>
-      request(`/api/derivatives/candles/${encodeURIComponent(secid)}`, { params }),
     bondAnalysis: (params) => request('/api/bonds/analysis', { params }),
     bondFilters: () => request('/api/bonds/filters'),
     exportParameters: () => request('/api/export/parameters'),

@@ -466,8 +466,6 @@ div.bond-pane[hidden] { display: none; }
 .chart-frame { position: relative; }
 .chart__rule { stroke: var(--text-mute); stroke-width: 1; stroke-dasharray: 3 3; }
 .chart__marker { stroke: var(--bg-elev); stroke-width: 1.5; }
-.chart__zero { stroke: var(--text-mute); stroke-width: 1.2; }
-.chart__line--dashed { stroke-dasharray: 6 4; }
 
 .chart-tip {
   position: absolute;
