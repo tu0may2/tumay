@@ -972,6 +972,15 @@
     }
   }
 
+  /** Сохранить файл, сообщив об имени или об ошибке. */
+  async function saveFile(promise) {
+    try {
+      toast(`Файл сформирован: ${await promise}`);
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
   async function downloadAnalysis(format) {
     try {
       // Фильтры те же, что на экране, но в файл отдаём больше строк
@@ -3859,9 +3868,9 @@
     wireDropzone('#pimport-drop', '#pimport-file', '#pimport-pick', previewPortfolioFile);
     on('#import-apply', 'click', applyImport);
     on('#pimport-apply', 'click', applyPortfolioImport);
-    on('#reval-download', 'click', () => {
-      window.location.href = api.revaluationUrl(state.portfolioName, 'xlsx');
-    });
+    on('#pimport-template', 'click', () => saveFile(api.downloadPortfolioTemplate()));
+    on('#reval-download', 'click', () =>
+      saveFile(api.downloadRevaluation(state.portfolioName, 'xlsx')));
 
     // Настройки
     on('#user-form', 'submit', submitUser);

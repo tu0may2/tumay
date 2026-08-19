@@ -436,6 +436,15 @@ class TestPortfolioImport:
         with pytest.raises(ValueError, match="Excel"):
             import_service.read_sheets(b"a;b", "portfolio.csv")
 
+    def test_template_is_a_readable_workbook(self):
+        """Шаблон должен открываться в Excel, а не просто отдаваться байтами."""
+        workbook = load_workbook(io.BytesIO(import_service.build_template()))
+        holdings = workbook["Остатки"]
+        # Шапка на второй строке: первая занята пояснением
+        headers = [cell.value for cell in holdings[2]]
+        assert "Количество" in headers
+        assert "Цена приобретения" in headers
+
     def test_accounting_type_parsing_variants(self):
         assert import_service.parse_accounting_type("До погашения") == ACCOUNTING_HTM
         assert import_service.parse_accounting_type("инвестиционный") == ACCOUNTING_HTM
@@ -444,3 +453,79 @@ class TestPortfolioImport:
         # Непонятное считаем торговым — так вело себя всё до появления видов
         assert import_service.parse_accounting_type("абракадабра") == ACCOUNTING_TRADING
         assert import_service.parse_accounting_type(None) == ACCOUNTING_TRADING
+
+
+class TestDownloadEndpoints:
+    """Выгрузки отдаются по HTTP, а не только собираются сервисом.
+
+    Эти два маршрута уже один раз сломались на фронтенде: кнопки ходили
+    обычной ссылкой, которая не несёт токен входа, и обе отвечали 401.
+    Здесь проверяется серверная половина — что файл действительно
+    формируется и открывается как книга Excel.
+    """
+
+    @pytest.fixture()
+    def client(self, tmp_path):
+        from fastapi.testclient import TestClient
+        from app.config import settings
+        import importlib
+        import app.db
+        import app.main
+
+        previous = (
+            settings.auth_enabled, settings.database_url,
+            settings.collect_on_startup, settings.scheduler_enabled,
+        )
+        settings.auth_enabled = False
+        settings.database_url = f"sqlite:///{tmp_path / 'dl.db'}"
+        settings.collect_on_startup = False
+        settings.scheduler_enabled = False
+        importlib.reload(app.db)
+        importlib.reload(app.main)
+
+        with TestClient(app.main.app) as active:
+            yield active
+
+        (
+            settings.auth_enabled, settings.database_url,
+            settings.collect_on_startup, settings.scheduler_enabled,
+        ) = previous
+        importlib.reload(app.db)
+        importlib.reload(app.main)
+
+    def test_template_downloads_as_workbook(self, client):
+        response = client.get("/api/import/portfolio/template")
+        assert response.status_code == 200
+        workbook = load_workbook(io.BytesIO(response.content))
+        assert set(workbook.sheetnames) == {"Портфели", "Остатки", "Сделки"}
+
+    def test_revaluation_download_without_positions_is_explained(self, client):
+        """Пустой портфель — понятное сообщение, а не пустой файл."""
+        response = client.get("/api/portfolio/revaluation/download")
+        assert response.status_code == 404
+        assert "нет позиций" in response.json()["detail"]
+
+    def test_revaluation_downloads_as_workbook(self, client):
+        from app.db import session_scope
+
+        with session_scope() as session:
+            bond = add_bond(session)
+            add_quote(session, bond, wa_price=95.0, prev_wa_price=94.0)
+            add_deal(session, bond.secid, quantity=10, price=90.0)
+
+        response = client.get("/api/portfolio/revaluation/download?fmt=xlsx")
+        assert response.status_code == 200
+        workbook = load_workbook(io.BytesIO(response.content))
+        assert workbook.sheetnames == ["Переоценка"]
+
+    def test_revaluation_downloads_as_csv(self, client):
+        from app.db import session_scope
+
+        with session_scope() as session:
+            bond = add_bond(session)
+            add_quote(session, bond, wa_price=95.0, prev_wa_price=94.0)
+            add_deal(session, bond.secid, quantity=10, price=90.0)
+
+        response = client.get("/api/portfolio/revaluation/download?fmt=csv")
+        assert response.status_code == 200
+        assert "Переоценка за день" in response.content.decode("utf-8-sig")

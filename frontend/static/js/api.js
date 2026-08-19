@@ -203,8 +203,10 @@
       return request('/api/import/reconcile', { method: 'POST', form });
     },
 
-    // Импорт портфеля книгой: портфели, остатки и сделки сразу
-    portfolioTemplateUrl: () => '/api/import/portfolio/template',
+    // Импорт портфеля книгой: портфели, остатки и сделки сразу.
+    // Скачивание идёт через download(), а не ссылкой: вход в терминал
+    // работает по токену в заголовке, которого у обычной ссылки нет
+    downloadPortfolioTemplate: () => download('/api/import/portfolio/template'),
     portfolioImportPreview: (file) => {
       const form = new FormData();
       form.append('file', file);
@@ -215,8 +217,8 @@
 
     // Переоценка и виды учёта
     revaluation: (name) => request('/api/portfolio/revaluation', { params: { name } }),
-    revaluationUrl: (name, fmt) =>
-      `/api/portfolio/revaluation/download?fmt=${fmt}${name ? `&name=${encodeURIComponent(name)}` : ''}`,
+    downloadRevaluation: (name, fmt = 'xlsx') =>
+      download('/api/portfolio/revaluation/download', { params: { name, fmt } }),
     accounting: () => request('/api/portfolio/accounting'),
     setAccounting: (name, accountingType) =>
       request('/api/portfolio/accounting', {
