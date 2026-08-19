@@ -3,7 +3,55 @@
   'use strict';
 
   const NS = 'http://www.w3.org/2000/svg';
-  const VIEW_W = 800;
+  //: Ширина на случай, когда контейнер ещё не показан и измерить нечего
+  //: (вкладка скрыта, clientWidth равен нулю). Как только вкладку откроют,
+  //: наблюдатель за размером перерисует график по настоящей ширине.
+  const FALLBACK_W = 800;
+
+  /**
+   * Ширина, в которой будем рисовать.
+   *
+   * Раньше все графики рисовались в системе координат шириной 800 и
+   * растягивались до контейнера через ``preserveAspectRatio="none"``. Растяжение
+   * неравномерное — по горизонтали множитель свой, по вертикали единица, —
+   * поэтому вместе с линиями растягивались и подписи: цифры выглядели
+   * приплюснутыми или разъехавшимися. Рисуем в реальных пикселях контейнера:
+   * масштаб единичный, искажать нечего.
+   */
+  function measureWidth(container) {
+    // Именно содержимое, без внутренних отступов: иначе SVG получится шире
+    // места, которое ему отведено, правило max-width его ужмёт — и мы снова
+    // получим масштабирование, только теперь равномерное
+    const style = global.getComputedStyle(container);
+    const padding =
+      (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    const width = Math.floor(container.clientWidth - padding);
+    return width > 0 ? width : FALLBACK_W;
+  }
+
+  /**
+   * Перерисовывать график при изменении ширины контейнера.
+   *
+   * Без этого график, нарисованный в скрытой вкладке или до поворота экрана,
+   * остался бы с чужой шириной: раньше растягивание это скрывало, теперь
+   * ширина зафиксирована в момент отрисовки.
+   */
+  function watchWidth(container, redraw) {
+    if (typeof ResizeObserver !== 'function') return;
+    if (container.__chartObserver) container.__chartObserver.disconnect();
+
+    let lastWidth = measureWidth(container);
+    const observer = new ResizeObserver(() => {
+      const width = measureWidth(container);
+      // Порог в один пиксель: дробные изменения от округлений вызывали бы
+      // бесконечную перерисовку
+      if (Math.abs(width - lastWidth) < 1) return;
+      lastWidth = width;
+      redraw();
+    });
+    observer.observe(container);
+    container.__chartObserver = observer;
+  }
 
   function el(name, attrs, text) {
     const node = document.createElementNS(NS, name);
@@ -29,12 +77,14 @@
     return { min: min - pad, max: max + pad };
   }
 
-  function createSvg(container, height) {
+  function createSvg(container, height, width) {
     container.innerHTML = '';
+    // viewBox совпадает с размером в пикселях, поэтому масштабирования нет и
+    // текст рисуется ровно тем кеглем, который задан в стилях
     const svg = el('svg', {
       class: 'chart',
-      viewBox: `0 0 ${VIEW_W} ${height}`,
-      preserveAspectRatio: 'none',
+      viewBox: `0 0 ${width} ${height}`,
+      width,
       height,
     });
     container.appendChild(svg);
@@ -84,8 +134,11 @@
     const active = (series || []).filter((s) => s.points && s.points.length);
     if (!active.length) return empty(container, opts.emptyMessage);
 
-    const svg = createSvg(container, opts.height);
-    const geom = { left: 52, top: 12, w: VIEW_W - 52 - 14, h: opts.height - 12 - 26 };
+    watchWidth(container, () => lineChart(container, series, options));
+
+    const width = measureWidth(container);
+    const svg = createSvg(container, opts.height, width);
+    const geom = { left: 52, top: 12, w: width - 52 - 14, h: opts.height - 12 - 26 };
 
     const allX = active.flatMap((s) => s.points.map((p) => p.x));
     const allY = active.flatMap((s) => s.points.map((p) => p.y));
@@ -234,6 +287,10 @@
     const lines = active.filter((s) => s.kind !== 'bar');
     const bars = active.filter((s) => s.kind === 'bar');
 
+    watchWidth(container, () => timeSeriesChart(container, seriesList, options));
+
+    const width = measureWidth(container);
+
     container.innerHTML = '';
     const frame = document.createElement('div');
     frame.className = 'chart-frame';
@@ -241,14 +298,14 @@
 
     const svg = el('svg', {
       class: 'chart',
-      viewBox: `0 0 ${VIEW_W} ${opts.height}`,
-      preserveAspectRatio: 'none',
+      viewBox: `0 0 ${width} ${opts.height}`,
+      width,
       height: opts.height,
     });
     frame.appendChild(svg);
 
     const right = bars.length ? 58 : 14;
-    const geom = { left: 56, top: 12, w: VIEW_W - 56 - right, h: opts.height - 12 - 26 };
+    const geom = { left: 56, top: 12, w: width - 56 - right, h: opts.height - 12 - 26 };
 
     const allX = active.flatMap((s) => s.points.map((p) => p.x));
     const xMin = Math.min(...allX);
@@ -376,8 +433,9 @@
     function move(event) {
       const rect = svg.getBoundingClientRect();
       if (!rect.width) return;
-      // viewBox растянут по ширине контейнера — переводим пиксели в координаты
-      const localX = ((event.clientX - rect.left) / rect.width) * VIEW_W;
+      // Координаты SVG совпадают с пикселями один к одному, но пересчёт через
+      // отношение оставляем: он верен и при масштабировании страницы браузером
+      const localX = ((event.clientX - rect.left) / rect.width) * width;
       if (localX < geom.left - 4 || localX > geom.left + geom.w + 4) return hide();
 
       const ratio = (localX - geom.left) / geom.w;
@@ -420,9 +478,9 @@
       tip.hidden = false;
 
       // Держим подсказку внутри карточки: у правого края разворачиваем влево
-      const px = (x / VIEW_W) * rect.width;
-      const width = tip.offsetWidth || 170;
-      tip.style.left = `${Math.max(4, Math.min(px + 14, rect.width - width - 4))}px`;
+      const px = (x / width) * rect.width;
+      const tipWidth = tip.offsetWidth || 170;
+      tip.style.left = `${Math.max(4, Math.min(px + 14, rect.width - tipWidth - 4))}px`;
       tip.style.top = '10px';
     }
 
@@ -459,8 +517,11 @@
     );
     if (!bars || !bars.length) return empty(container, opts.emptyMessage);
 
-    const svg = createSvg(container, opts.height);
-    const geom = { left: 52, top: 12, w: VIEW_W - 52 - 14, h: opts.height - 12 - 26 };
+    watchWidth(container, () => barChart(container, bars, options));
+
+    const width = measureWidth(container);
+    const svg = createSvg(container, opts.height, width);
+    const geom = { left: 52, top: 12, w: width - 52 - 14, h: opts.height - 12 - 26 };
 
     const values = bars.map((b) => b.y);
     const maxValue = Math.max(...values, 0);
@@ -471,11 +532,12 @@
     drawGrid(svg, geom, minValue, maxValue, opts.yFormat, 3);
 
     const slot = geom.w / bars.length;
-    const width = Math.max(1, Math.min(slot * 0.72, 42));
+    // Ширина одного столбца — не путать с шириной всего графика
+    const barWidth = Math.max(1, Math.min(slot * 0.72, 42));
     const zeroY = scaleY(0);
 
     bars.forEach((bar, index) => {
-      const x = geom.left + slot * index + (slot - width) / 2;
+      const x = geom.left + slot * index + (slot - barWidth) / 2;
       const y = scaleY(bar.y);
       let cls = 'chart__bar';
       if (opts.colorBySign) cls += bar.y >= 0 ? ' chart__bar--up' : ' chart__bar--down';
@@ -484,7 +546,7 @@
         class: cls,
         x,
         y: Math.min(y, zeroY),
-        width,
+        width: barWidth,
         height: Math.max(1, Math.abs(zeroY - y)),
         rx: 2,
       });
@@ -525,11 +587,14 @@
     const data = (rows || []).filter((r) => r.close !== null && r.close !== undefined);
     if (!data.length) return empty(container, opts.emptyMessage || 'Нет истории торгов');
 
-    const svg = createSvg(container, opts.height);
+    watchWidth(container, () => priceVolumeChart(container, rows, options));
+
+    const width = measureWidth(container);
+    const svg = createSvg(container, opts.height, width);
     const priceH = opts.height * 0.62;
     const volumeTop = priceH + 14;
     const volumeH = opts.height - volumeTop - 26;
-    const geom = { left: 52, top: 12, w: VIEW_W - 52 - 14, h: priceH - 12 };
+    const geom = { left: 52, top: 12, w: width - 52 - 14, h: priceH - 12 };
 
     const prices = data.map((r) => r.close);
     const bounds = niceBounds(Math.min(...prices), Math.max(...prices));
@@ -560,15 +625,16 @@
 
     // Объёмы окрашиваем по направлению дня — видно, на чём был оборот
     const slot = geom.w / data.length;
-    const width = Math.max(1, Math.min(slot * 0.7, 22));
+    // Ширина столбца объёма — не путать с шириной всего графика
+    const barWidth = Math.max(1, Math.min(slot * 0.7, 22));
     data.forEach((row, i) => {
       const height = ((row.volume || 0) / maxVolume) * volumeH;
       const rising = i === 0 ? true : row.close >= data[i - 1].close;
       const rect = el('rect', {
         class: `chart__bar chart__bar--${rising ? 'up' : 'down'}`,
-        x: scaleX(i) - width / 2,
+        x: scaleX(i) - barWidth / 2,
         y: volumeTop + volumeH - height,
-        width,
+        width: barWidth,
         height: Math.max(1, height),
         rx: 1,
       });
@@ -622,8 +688,11 @@
     );
     if (!data.length) return empty(container, opts.emptyMessage);
 
-    const svg = createSvg(container, opts.height);
-    const geom = { left: 58, top: 14, w: VIEW_W - 58 - 16, h: opts.height - 14 - 34 };
+    watchWidth(container, () => scatterChart(container, points, options));
+
+    const width = measureWidth(container);
+    const svg = createSvg(container, opts.height, width);
+    const geom = { left: 58, top: 14, w: width - 58 - 16, h: opts.height - 14 - 34 };
 
     const xBounds = niceBounds(Math.min(...data.map((p) => p.x)), Math.max(...data.map((p) => p.x)));
     const yBounds = niceBounds(Math.min(...data.map((p) => p.y)), Math.max(...data.map((p) => p.y)));

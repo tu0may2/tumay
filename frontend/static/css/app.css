@@ -475,7 +475,9 @@ div.bond-pane[hidden] { display: none; }
 /* ------------------------------------------------------------------ */
 /* Графики                                                             */
 /* ------------------------------------------------------------------ */
-.chart { width: 100%; display: block; overflow: visible; }
+/* Ширину задаёт сам SVG в пикселях (см. charts.js): растягивать его через
+   CSS нельзя — вместе с линиями растянутся и подписи */
+.chart { max-width: 100%; display: block; overflow: visible; }
 .chart__grid { stroke: var(--border-soft); stroke-width: 1; }
 .chart__axis { fill: var(--text-mute); font-size: 10px; font-family: var(--mono); }
 .chart__line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
