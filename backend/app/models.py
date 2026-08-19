@@ -298,6 +298,35 @@ class CorpAction(Base):
     source: Mapped[str] = mapped_column(String(16), default="nsd")
 
 
+#: Виды учёта портфеля. Разница не косметическая: торговый портфель
+#: переоценивается по рынку, а удерживаемый до погашения ведётся по
+#: амортизированной стоимости — рыночная цена для него справочная.
+ACCOUNTING_TRADING = "trading"
+ACCOUNTING_HTM = "htm"
+
+
+class Portfolio(Base):
+    """Портфель казначейства и его вид учёта.
+
+    До появления этой таблицы портфель был просто текстовой меткой на сделке,
+    и такие «безымянные» портфели продолжают работать — они считаются
+    торговыми. Запись здесь нужна, когда у портфеля есть свойство, которого
+    в метке не выразишь: прежде всего вид учёта.
+    """
+
+    __tablename__ = "portfolios"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    #: trading — торговый (переоценка по рынку),
+    #: htm — до погашения (амортизированная стоимость)
+    accounting_type: Mapped[str] = mapped_column(
+        String(16), default=ACCOUNTING_TRADING
+    )
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class Deal(Base):
     """Сделка казначейства — основа для позиций и P&L."""
 

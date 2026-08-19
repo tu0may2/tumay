@@ -377,6 +377,19 @@ SU26238RMFS4
         <p class="card__note" id="history-note"></p>
       </article>
 
+      <article class="card">
+        <header class="card__head">
+          <h2>Переоценка</h2>
+          <span class="card__hint" id="reval-summary"></span>
+          <div class="card__tools">
+            <button class="btn btn--sm" id="reval-download" type="button">Выгрузить (.xlsx)</button>
+          </div>
+        </header>
+        <div class="card__body" id="reval-totals"></div>
+        <div class="card__body table-wrap" id="reval-table" style="max-height:520px"></div>
+        <p class="card__note">Переоценка считается по средневзвешенной цене (СВЦ), а не по цене последней сделки: одна случайная сделка в конце дня двигает last, но не СВЦ. «За день» — разница с СВЦ предыдущего торгового дня, «накопленная» — с цены приобретения. По портфелю до погашения в учёт идёт амортизированная стоимость, а рыночная оценка показана справочно и в итоги не включена.</p>
+      </article>
+
       <div class="grid grid--2">
         <article class="card">
           <header class="card__head"><h2>Структура портфеля</h2></header>
@@ -674,6 +687,37 @@ SU26238RMFS4
 
     <!-- Импорт и сверка -->
     <section class="view" id="view-imports">
+      <article class="card">
+        <header class="card__head">
+          <h2>Загрузить портфель книгой Excel</h2>
+          <span class="card__hint">портфели, остатки и сделки одним файлом</span>
+        </header>
+        <div class="card__body">
+          <div class="toolbar">
+            <a class="btn btn--sm" id="pimport-template" href="/api/import/portfolio/template">Скачать шаблон</a>
+            <span class="dim">Заполните листы «Портфели», «Остатки», «Сделки» — любой можно оставить пустым</span>
+          </div>
+          <div class="dropzone" id="pimport-drop">
+            <input type="file" id="pimport-file" accept=".xlsx,.xlsm" hidden>
+            <p><strong>Перетащите книгу сюда</strong> или <button class="btn btn--sm" id="pimport-pick" type="button">выберите на диске</button></p>
+            <p class="dim" id="pimport-filename">Состав портфеля: бумага, количество, цена приобретения</p>
+          </div>
+          <div class="toolbar">
+            <label class="check">
+              <input type="checkbox" id="pimport-replace">
+              <span>Заменить портфель целиком</span>
+            </label>
+            <span class="dim">Включите, если файл — это полный текущий состав: прежние сделки затронутых портфелей будут стёрты</span>
+          </div>
+          <div class="toolbar">
+            <button class="btn btn--primary btn--sm" id="pimport-apply" type="button" disabled>Загрузить портфель</button>
+            <span class="form-msg" id="pimport-msg"></span>
+          </div>
+        </div>
+        <div class="card__body" id="pimport-preview"></div>
+        <p class="card__note">Остатки записываются как входящие сделки покупки на указанную дату — так позиция, ФИФО и купонный доход считаются тем же способом, что и по обычным сделкам. Вид учёта портфеля («торговый» или «до погашения») определяет, идёт ли переоценка по рынку.</p>
+      </article>
+
       <div class="grid grid--2">
         <article class="card">
           <header class="card__head">

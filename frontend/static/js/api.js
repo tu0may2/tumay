@@ -203,6 +203,27 @@
       return request('/api/import/reconcile', { method: 'POST', form });
     },
 
+    // Импорт портфеля книгой: портфели, остатки и сделки сразу
+    portfolioTemplateUrl: () => '/api/import/portfolio/template',
+    portfolioImportPreview: (file) => {
+      const form = new FormData();
+      form.append('file', file);
+      return request('/api/import/portfolio/preview', { method: 'POST', form });
+    },
+    portfolioImportApply: (payload) =>
+      request('/api/import/portfolio/apply', { method: 'POST', body: payload }),
+
+    // Переоценка и виды учёта
+    revaluation: (name) => request('/api/portfolio/revaluation', { params: { name } }),
+    revaluationUrl: (name, fmt) =>
+      `/api/portfolio/revaluation/download?fmt=${fmt}${name ? `&name=${encodeURIComponent(name)}` : ''}`,
+    accounting: () => request('/api/portfolio/accounting'),
+    setAccounting: (name, accountingType) =>
+      request('/api/portfolio/accounting', {
+        method: 'PUT',
+        body: { name, accounting_type: accountingType },
+      }),
+
     // История, отчёт, налоги, оферты
     portfolioHistory: (name, days) =>
       request('/api/history/portfolio', { params: { name, days } }),

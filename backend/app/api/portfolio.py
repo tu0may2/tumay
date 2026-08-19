@@ -1,18 +1,29 @@
 """Портфель и сделки казначейства."""
 from __future__ import annotations
 
-from typing import Any
+from datetime import date
+from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..models import Deal, Instrument
-from ..schemas import DealBulkCreate, DealBulkResult, DealCreate, DealRead
+from ..schemas import (
+    DealBulkCreate,
+    DealBulkResult,
+    DealCreate,
+    DealRead,
+    PortfolioAccounting,
+)
 from ..services.auth import audit, require_trader
 from ..services import portfolio as portfolio_service
+from ..services import revaluation as revaluation_service
 from ..services import risk as risk_service
+from ..services.tabular import to_csv, to_xlsx
 
 router = APIRouter(prefix="/api/portfolio", tags=["Портфель"])
 
@@ -30,6 +41,101 @@ def get_portfolio(
 @router.get("/names", summary="Список портфелей")
 def get_portfolio_names(session: Session = Depends(get_session)) -> list[str]:
     return portfolio_service.portfolio_names(session)
+
+
+@router.get("/accounting", summary="Виды учёта портфелей")
+def get_accounting(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
+    """Какой портфель как учитывается: торговый или до погашения."""
+    titles = {"trading": "Торговый", "htm": "До погашения"}
+    return [
+        {"name": name, "accounting_type": kind, "title": titles.get(kind, kind)}
+        for name, kind in sorted(portfolio_service.accounting_types(session).items())
+    ]
+
+
+@router.put("/accounting", summary="Задать вид учёта портфеля")
+def set_accounting(
+    payload: PortfolioAccounting,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> dict[str, Any]:
+    """Сменить вид учёта. От него зависит, идёт ли переоценка по рынку."""
+    try:
+        record = portfolio_service.set_accounting_type(
+            session, payload.name, payload.accounting_type
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    audit(
+        session,
+        user,
+        action="update",
+        entity="portfolio",
+        entity_id=payload.name,
+        detail=f"вид учёта: {payload.accounting_type}",
+    )
+    return {"name": record.name, "accounting_type": record.accounting_type}
+
+
+@router.get("/revaluation", summary="Переоценка портфеля")
+def get_revaluation(
+    name: str | None = Query(None, description="Имя портфеля; пусто — все сразу"),
+    method: str | None = Query(None, description="fifo или average"),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Переоценка: накопленная, за день по СВЦ и амортизированная стоимость."""
+    return revaluation_service.revaluate(session, portfolio=name, method=method)
+
+
+@router.get("/revaluation/download", summary="Выгрузить переоценку")
+def download_revaluation(
+    name: str | None = Query(None),
+    method: str | None = Query(None),
+    fmt: Literal["xlsx", "csv"] = Query("xlsx"),
+    session: Session = Depends(get_session),
+) -> Response:
+    """Тот же блок переоценки, но файлом для Excel."""
+    result = revaluation_service.revaluate(session, portfolio=name, method=method)
+    if not result["items"]:
+        raise HTTPException(status_code=404, detail="В портфеле нет позиций")
+
+    columns = list(revaluation_service.REVALUATION_COLUMNS)
+    rows = revaluation_service.rows_for_export(result["items"])
+    stem = f"Переоценка {date.today():%d.%m.%Y}"
+
+    if fmt == "csv":
+        content = to_csv(columns, rows)
+        media_type = "text/csv; charset=utf-8"
+        filename = f"{stem}.csv"
+    else:
+        totals = result["totals"]
+        content = to_xlsx(
+            columns,
+            rows,
+            sheet_title="Переоценка",
+            meta=[
+                ("Портфель", name or "все"),
+                ("Позиций", str(totals["positions"])),
+                ("Учётная стоимость, ₽", f"{totals['carrying_value_rub']:,.2f}".replace(",", " ")),
+                ("Переоценка за день, ₽", f"{totals['daily_reval_rub']:,.2f}".replace(",", " ")),
+                ("Переоценка накопленная, ₽", f"{totals['total_reval_rub']:,.2f}".replace(",", " ")),
+                ("Сформировано", date.today().strftime("%d.%m.%Y")),
+                (
+                    "Примечание",
+                    "По портфелю до погашения рыночная переоценка справочная "
+                    "и в итоги не включена",
+                ),
+            ],
+        )
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"{stem}.xlsx"
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @router.get("/sensitivity", summary="Чувствительность к ставке")

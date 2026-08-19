@@ -253,6 +253,29 @@ class ImportApply(BaseModel):
     deals: list[dict] = Field(..., min_length=1, max_length=5000)
 
 
+class PortfolioImportApply(BaseModel):
+    """Подтверждение импорта книги портфеля.
+
+    Все три списка необязательны: книга может описывать только состав, только
+    журнал операций или только виды учёта портфелей.
+    """
+
+    portfolios: list[dict] = Field(default_factory=list, max_length=200)
+    holdings: list[dict] = Field(default_factory=list, max_length=5000)
+    deals: list[dict] = Field(default_factory=list, max_length=5000)
+    #: Стереть прежние сделки затронутых портфелей перед записью — режим
+    #: «файл содержит полный текущий состав». Без него повторная загрузка
+    #: тех же остатков удвоит позицию
+    replace_existing: bool = False
+
+
+class PortfolioAccounting(BaseModel):
+    """Вид учёта портфеля."""
+
+    name: str = Field(..., min_length=1, max_length=64)
+    accounting_type: Literal["trading", "htm"]
+
+
 class LoginRequest(BaseModel):
     login: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=1)

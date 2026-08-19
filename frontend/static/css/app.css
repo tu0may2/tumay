@@ -722,6 +722,40 @@ tr.row--warn td { background: color-mix(in srgb, var(--warn) 10%, transparent); 
 .accrual-picked { font-family: var(--mono); font-size: 12.5px; align-self: end; padding-bottom: 7px; }
 .card__note.warn { color: var(--warn); }
 
+/* Импорт портфеля: заголовок листа книги внутри предпросмотра */
+.sheet-title {
+  font-size: 11px; color: var(--text-mute);
+  text-transform: uppercase; letter-spacing: 0.04em;
+  margin: 14px 14px 6px;
+}
+
+/* Переоценка: итоги по каждому портфелю отдельной плиткой. Торговый и
+   инвестиционный портфели считаются по-разному, поэтому общей суммы нет */
+#reval-totals {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.reval-total {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  padding: 10px 12px;
+  background: var(--surface-soft, transparent);
+}
+
+.reval-total__head {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 8px;
+}
+
+.reval-total__grid {
+  display: grid; grid-template-columns: 1fr auto;
+  gap: 4px 12px; font-size: 12.5px;
+}
+
+.reval-total__grid span { color: var(--text-mute); }
+.reval-total__grid b { font-family: var(--mono); text-align: right; }
+
 /* Пометка приблизительного значения и сводка по выпуску */
 .approx { color: var(--text-mute); margin-right: 1px; }
 

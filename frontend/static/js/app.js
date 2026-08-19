@@ -1386,6 +1386,112 @@
   // ------------------------------------------------------------------
   // Портфель
   // ------------------------------------------------------------------
+  /** Блок переоценки: итоги по портфелям и разложение по бумагам. */
+  async function renderRevaluation() {
+    const table = $('#reval-table');
+    const totalsBox = $('#reval-totals');
+    if (!table) return;
+    loading(table);
+
+    try {
+      const data = await api.revaluation(state.portfolioName);
+      const totals = data.totals;
+
+      $('#reval-summary').textContent = data.quote_date
+        ? `срез ${fmt.dateTime(data.quote_date)}`
+        : '';
+
+      // Итоги по каждому портфелю отдельной плиткой: торговый и до погашения
+      // складывать в одну сумму переоценки нельзя
+      totalsBox.innerHTML = (data.by_portfolio || [])
+        .map((row) => `
+          <div class="reval-total">
+            <div class="reval-total__head">
+              <b>${fmt.esc(row.portfolio || 'Без названия')}</b>
+              <span class="badge badge--${row.accounting_type === 'htm' ? 'flat' : 'up'}">
+                ${row.accounting_type === 'htm' ? 'до погашения' : 'торговый'}
+              </span>
+            </div>
+            <div class="reval-total__grid">
+              <span>Учётная стоимость</span><b>${fmt.rub(row.carrying_value_rub)}</b>
+              <span>За день</span>
+              <b class="${fmt.trendClass(row.daily_reval_rub)}">${
+                row.accounting_type === 'htm' ? '—' : fmt.rub(row.daily_reval_rub)
+              }</b>
+              <span>Накопленная</span>
+              <b class="${fmt.trendClass(row.total_reval_rub)}">${
+                row.accounting_type === 'htm' ? '—' : fmt.rub(row.total_reval_rub)
+              }</b>
+              <span>НКД</span><b>${fmt.rub(row.accrued_now_rub)}</b>
+            </div>
+          </div>`)
+        .join('') || '<div class="empty">Нет открытых позиций</div>';
+
+      const refMark = (row, value) =>
+        row.market_is_reference
+          ? `<span class="dim" title="справочно, в учёт не идёт">${value}</span>`
+          : value;
+
+      renderTable(table, [
+        { title: 'Бумага', render: (row) => secCell(row) },
+        { title: 'Портфель', render: (row) => `<span class="dim">${fmt.esc(row.portfolio || '—')}</span>` },
+        {
+          title: 'Учёт',
+          render: (row) =>
+            `<span class="badge badge--${row.accounting_type === 'htm' ? 'flat' : 'up'}">${
+              row.accounting_type === 'htm' ? 'до пог.' : 'торг.'
+            }</span>`,
+        },
+        { title: 'Кол-во', className: 'num', render: (row) => fmt.int(row.quantity) },
+        { title: 'Цена приобр.', className: 'num', render: (row) => fmt.num(row.book_price, 4) },
+        { title: 'СВЦ пред. дня', className: 'num', render: (row) => fmt.num(row.prev_wa_price, 4) },
+        { title: 'СВЦ текущая', className: 'num', render: (row) => fmt.num(row.wa_price, 4) },
+        { title: 'Балансовая, ₽', className: 'num', render: (row) => fmt.money(row.book_value_rub) },
+        {
+          title: 'Рыночная, ₽',
+          className: 'num',
+          render: (row) => refMark(row, fmt.money(row.market_value_rub)),
+        },
+        {
+          title: 'Аморт., ₽',
+          className: 'num',
+          render: (row) =>
+            row.amortized_value_rub === null || row.amortized_value_rub === undefined
+              ? '<span class="dim">—</span>'
+              : fmt.money(row.amortized_value_rub),
+        },
+        {
+          title: 'Учётная, ₽',
+          className: 'num',
+          render: (row) => `<b>${fmt.money(row.carrying_value_rub)}</b>`,
+        },
+        {
+          title: 'За день, ₽',
+          className: 'num',
+          render: (row) =>
+            refMark(row, `<span class="${fmt.trendClass(row.daily_reval_rub)}">${fmt.money(row.daily_reval_rub)}</span>`),
+        },
+        {
+          title: 'Накопл., ₽',
+          className: 'num',
+          render: (row) =>
+            refMark(row, `<span class="${fmt.trendClass(row.total_reval_rub)}">${fmt.money(row.total_reval_rub)}</span>`),
+        },
+        {
+          title: 'Накопл., %',
+          className: 'num',
+          render: (row) => refMark(row, fmt.pct(row.total_reval_pct, 2)),
+        },
+      ], data.items, {
+        rowKey: (row) => row.secid,
+        onRowClick: openInstrument,
+        emptyMessage: 'Нет открытых позиций',
+      });
+    } catch (error) {
+      failure(table, error);
+    }
+  }
+
   async function renderPortfolio() {
     const kpi = $('#portfolio-kpi');
     loading(kpi);
@@ -1396,6 +1502,10 @@
         api.sensitivity(state.portfolioName),
         api.deals({ name: state.portfolioName, limit: 100 }),
       ]);
+
+      // Переоценка грузится своим запросом и не должна ронять всю вкладку,
+      // если сорвётся: остальные блоки от неё не зависят
+      renderRevaluation();
 
       const money = (value) => `<span class="${fmt.trendClass(value)}">${fmt.rub(value)}</span>`;
       const cards = [
@@ -2390,6 +2500,178 @@
       state.importDeals = [];
       $('#import-preview').innerHTML = '<div class="empty">Сделки загружены в журнал</div>';
       // Портфель пересчитан — его вкладку нужно перерисовать заново
+      state.loaded.portfolio = false;
+      state.loaded.cash = false;
+      await loadPortfolioNames();
+    } catch (error) {
+      toast(error.message, true);
+      button.disabled = false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Импорт портфеля книгой
+  // ------------------------------------------------------------------
+
+  /** Разбор книги с портфелем: показываем каждый лист отдельной таблицей. */
+  async function previewPortfolioFile(file) {
+    if (!file) return;
+    const message = $('#pimport-msg');
+    const container = $('#pimport-preview');
+    $('#pimport-filename').textContent = file.name;
+    loading(container);
+    message.textContent = '';
+    $('#pimport-apply').disabled = true;
+
+    try {
+      const result = await api.portfolioImportPreview(file);
+      state.portfolioImport = result;
+
+      if (result.errors && result.errors.length) {
+        message.textContent = result.errors.join('; ');
+        message.className = 'form-msg form-msg--err';
+        container.innerHTML = '';
+        return;
+      }
+
+      const parts = [];
+      if (result.portfolios.length) parts.push(`портфелей ${result.portfolios.length}`);
+      if (result.holdings.length) {
+        parts.push(`остатков ${result.holdings_valid} из ${result.holdings.length}`);
+      }
+      if (result.deals.length) {
+        parts.push(`сделок ${result.deals_valid} из ${result.deals.length}`);
+      }
+      message.innerHTML = parts.length ? `Разобрано: ${parts.join(', ')}` : 'Данных не найдено';
+      message.className = 'form-msg' + (parts.length ? ' form-msg--ok' : ' form-msg--err');
+      $('#pimport-apply').disabled = !(result.holdings_valid || result.deals_valid || result.portfolios.length);
+
+      container.innerHTML = '';
+
+      // Предупреждения показываем до таблиц: задвоение позиции заметить в
+      // длинном списке строк невозможно, а последствия у него тяжёлые
+      (result.warnings || []).forEach((text) => {
+        const box = document.createElement('p');
+        box.className = 'card__note warn';
+        box.textContent = text;
+        container.appendChild(box);
+      });
+
+      if (result.portfolios.length) {
+        container.appendChild(sheetTitle('Портфели'));
+        const box = document.createElement('div');
+        box.className = 'table-wrap';
+        renderTable(box, [
+          { title: 'Портфель', render: (row) => fmt.esc(row.name) },
+          {
+            title: 'Вид учёта',
+            render: (row) =>
+              `<span class="badge badge--${row.accounting_type === 'htm' ? 'flat' : 'up'}">${fmt.esc(row.accounting_title)}</span>`,
+          },
+          { title: 'Комментарий', render: (row) => `<span class="dim">${fmt.esc(row.comment || '—')}</span>` },
+        ], result.portfolios, {});
+        container.appendChild(box);
+      }
+
+      if (result.holdings.length) {
+        container.appendChild(sheetTitle('Остатки'));
+        const box = document.createElement('div');
+        box.className = 'table-wrap';
+        box.style.maxHeight = '340px';
+        renderTable(box, [
+          { title: 'Стр.', className: 'num', render: (row) => `<span class="dim">${row.line}</span>` },
+          { title: 'Портфель', render: (row) => fmt.esc(row.portfolio) },
+          { title: 'Бумага', render: (row) => fmt.esc(row.secid || '—') },
+          { title: 'Кол-во', className: 'num', render: (row) => fmt.int(row.quantity) },
+          { title: 'Цена', className: 'num', render: (row) => fmt.num(row.price, 4) },
+          { title: 'НКД', className: 'num', render: (row) => fmt.num(row.accrued_interest, 2) },
+          { title: 'Дата', render: (row) => fmt.date(row.trade_date) },
+          {
+            title: 'Замечания',
+            render: (row) =>
+              row.problems.length
+                ? `<span class="problems">${fmt.esc(row.problems.join('; '))}</span>`
+                : '<span class="up">—</span>',
+          },
+        ], result.holdings, {});
+        markBadRows(box, result.holdings);
+        container.appendChild(box);
+      }
+
+      if (result.deals.length) {
+        container.appendChild(sheetTitle('Сделки'));
+        const box = document.createElement('div');
+        box.className = 'table-wrap';
+        box.style.maxHeight = '340px';
+        renderTable(box, [
+          { title: 'Стр.', className: 'num', render: (row) => `<span class="dim">${row.line}</span>` },
+          { title: 'Портфель', render: (row) => fmt.esc(row.portfolio) },
+          { title: 'Дата', render: (row) => fmt.date(row.trade_date) },
+          { title: 'Бумага', render: (row) => fmt.esc(row.secid || '—') },
+          {
+            title: 'Направление',
+            render: (row) =>
+              `<span class="badge badge--${row.side === 'buy' ? 'up' : 'down'}">${row.side === 'buy' ? 'покупка' : 'продажа'}</span>`,
+          },
+          { title: 'Кол-во', className: 'num', render: (row) => fmt.int(row.quantity) },
+          { title: 'Цена', className: 'num', render: (row) => fmt.num(row.price, 4) },
+          {
+            title: 'Замечания',
+            render: (row) =>
+              row.problems.length
+                ? `<span class="problems">${fmt.esc(row.problems.join('; '))}</span>`
+                : '<span class="up">—</span>',
+          },
+        ], result.deals, {});
+        markBadRows(box, result.deals);
+        container.appendChild(box);
+      }
+    } catch (error) {
+      failure(container, error);
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  function sheetTitle(text) {
+    const title = document.createElement('h3');
+    title.className = 'sheet-title';
+    title.textContent = text;
+    return title;
+  }
+
+  /** Подсветить строки с замечаниями — их не запишут. */
+  function markBadRows(container, rows) {
+    container.querySelectorAll('tbody tr').forEach((tr, index) => {
+      if (rows[index] && !rows[index].ok) tr.classList.add('row--bad');
+    });
+  }
+
+  async function applyPortfolioImport() {
+    const parsed = state.portfolioImport;
+    if (!parsed) return;
+
+    const replace = $('#pimport-replace').checked;
+    if (replace && !confirm(
+      'Прежние сделки затронутых портфелей будут удалены безвозвратно. Продолжить?'
+    )) return;
+
+    const button = $('#pimport-apply');
+    button.disabled = true;
+    try {
+      const result = await api.portfolioImportApply({
+        portfolios: parsed.portfolios || [],
+        holdings: (parsed.holdings || []).filter((item) => item.ok),
+        deals: (parsed.deals || []).filter((item) => item.ok),
+        replace_existing: replace,
+      });
+      toast(
+        `Загружено: портфелей ${result.portfolios}, остатков ${result.holdings}, ` +
+        `сделок ${result.deals}` +
+        (result.removed ? `, удалено прежних ${result.removed}` : '')
+      );
+      state.portfolioImport = null;
+      $('#pimport-preview').innerHTML = '<div class="empty">Портфель загружен</div>';
       state.loaded.portfolio = false;
       state.loaded.cash = false;
       await loadPortfolioNames();
@@ -3574,7 +3856,12 @@
     // Импорт и сверка
     wireDropzone('#import-drop', '#import-file', '#import-pick', previewImportFile);
     wireDropzone('#recon-drop', '#recon-file', '#recon-pick', runReconcile);
+    wireDropzone('#pimport-drop', '#pimport-file', '#pimport-pick', previewPortfolioFile);
     on('#import-apply', 'click', applyImport);
+    on('#pimport-apply', 'click', applyPortfolioImport);
+    on('#reval-download', 'click', () => {
+      window.location.href = api.revaluationUrl(state.portfolioName, 'xlsx');
+    });
 
     // Настройки
     on('#user-form', 'submit', submitUser);

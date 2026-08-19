@@ -22,7 +22,16 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import settings
-from ..models import Bar, CorpAction, Deal, Instrument, Quote
+from ..models import (
+    ACCOUNTING_HTM,
+    ACCOUNTING_TRADING,
+    Bar,
+    CorpAction,
+    Deal,
+    Instrument,
+    Portfolio,
+    Quote,
+)
 from .analytics import latest_quote_map
 from .fx import BASE_CURRENCY, FxBook, coupon_to_rub, instrument_currency, is_rub
 
@@ -606,5 +615,51 @@ def _breakdown(
 
 
 def portfolio_names(session: Session) -> list[str]:
-    rows = session.execute(select(Deal.portfolio).distinct().order_by(Deal.portfolio)).all()
-    return [row[0] for row in rows]
+    """Все портфели: и заведённые явно, и встретившиеся только в сделках.
+
+    Портфель может существовать в двух видах: записью в справочнике (тогда у
+    него задан вид учёта) и просто меткой на сделке. Объединяем, иначе
+    портфель, заведённый до появления справочника, пропал бы из списка.
+    """
+    from_deals = {
+        row[0]
+        for row in session.execute(select(Deal.portfolio).distinct()).all()
+        if row[0]
+    }
+    from_registry = {
+        row[0] for row in session.execute(select(Portfolio.name)).all() if row[0]
+    }
+    return sorted(from_deals | from_registry)
+
+
+def accounting_types(session: Session) -> dict[str, str]:
+    """Вид учёта по каждому портфелю.
+
+    Портфели без записи в справочнике считаются торговыми: до появления видов
+    учёта весь терминал вёл себя именно так, и менять оценку задним числом
+    у тех, кто ничего не настраивал, нельзя.
+    """
+    known = {
+        name: accounting
+        for name, accounting in session.execute(
+            select(Portfolio.name, Portfolio.accounting_type)
+        ).all()
+    }
+    return {name: known.get(name, ACCOUNTING_TRADING) for name in portfolio_names(session)}
+
+
+def set_accounting_type(session: Session, name: str, accounting_type: str) -> Portfolio:
+    """Завести портфель в справочнике или сменить его вид учёта."""
+    if accounting_type not in (ACCOUNTING_TRADING, ACCOUNTING_HTM):
+        raise ValueError(f"Неизвестный вид учёта: {accounting_type}")
+
+    record = session.execute(
+        select(Portfolio).where(Portfolio.name == name)
+    ).scalar_one_or_none()
+    if record is None:
+        record = Portfolio(name=name, accounting_type=accounting_type)
+        session.add(record)
+    else:
+        record.accounting_type = accounting_type
+    session.commit()
+    return record
