@@ -82,16 +82,25 @@ def ensure_admin(session: Session) -> str | None:
     if session.execute(select(User.id).limit(1)).first() is not None:
         return None
 
+    generated = not settings.admin_password
     password = settings.admin_password or secrets.token_urlsafe(12)
     create_user(
         session, login=settings.admin_login, password=password, role="admin",
         full_name="Администратор",
     )
-    logger.warning(
-        "Создан администратор %s с паролем %s — смените его после входа",
-        settings.admin_login,
-        password,
-    )
+    if generated:
+        # Печатаем только пароль, которого человек ещё не знает: иначе тот, что
+        # он сам вписал в .env, вдобавок оседает в системном журнале, откуда
+        # его видно всем, у кого есть journalctl, и после смены пароля тоже
+        logger.warning(
+            "Создан администратор %s с паролем %s — смените его после входа",
+            settings.admin_login,
+            password,
+        )
+    else:
+        logger.info(
+            "Создан администратор %s с паролем из настроек", settings.admin_login
+        )
     return password
 
 
@@ -149,6 +158,22 @@ def logout(session: Session, token: str) -> None:
     if record is not None:
         session.delete(record)
         session.commit()
+
+
+def purge_expired_sessions(session: Session) -> int:
+    """Удалить просроченные сессии.
+
+    Раньше строка исчезала только при обращении с её же токеном — то есть у
+    брошенного входа не исчезала никогда. Пока строка жива, токен в ней
+    остаётся действующим ключом на случай утечки базы, да и таблица растёт.
+    """
+    from sqlalchemy import delete
+
+    result = session.execute(
+        delete(Session_).where(Session_.expires_at < datetime.utcnow())
+    )
+    session.commit()
+    return result.rowcount or 0
 
 
 def drop_sessions(session: Session, user_id: int) -> int:

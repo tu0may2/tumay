@@ -79,10 +79,18 @@ def _parse_russian_date(text: str) -> date | None:
 
 
 def _absolute_url(href: str) -> str:
-    """Ссылки на странице относительные — приводим к полным."""
-    if href.startswith("http"):
-        return href
-    return f"{settings.cbr_base_url.rstrip('/')}/{href.lstrip('/')}"
+    """Ссылки на странице относительные — приводим к полным.
+
+    Схему проверяем явно, а не по началу строки: ссылка приходит из разметки
+    чужой страницы и попадает в атрибут ``href`` на нашей. Пропускаем только
+    http и https — всё прочее (``javascript:``, ``data:``) считаем путём и
+    подклеиваем к адресу ЦБ, где оно безвредно.
+    """
+    stripped = href.strip()
+    lowered = stripped.lower()
+    if lowered.startswith(("http://", "https://")):
+        return stripped
+    return f"{settings.cbr_base_url.rstrip('/')}/{stripped.lstrip('/')}"
 
 
 def _localname(tag: str) -> str:

@@ -5,7 +5,7 @@ from datetime import date
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,6 +22,7 @@ from ..schemas import (
     UserRead,
 )
 from ..services import auth as auth_service
+from ..services import ratelimit
 from ..services import history as history_service
 from ..services import report as report_service
 from ..services import treasury_extras as extras_service
@@ -52,7 +53,9 @@ def auth_mode(session: Session = Depends(get_session)) -> dict[str, Any]:
 
 @router.post("/auth/login", summary="Войти")
 def login(
-    payload: LoginRequest, session: Session = Depends(get_session)
+    payload: LoginRequest,
+    request: Request,
+    session: Session = Depends(get_session),
 ) -> dict[str, Any]:
     if not settings.auth_enabled:
         return {
@@ -61,7 +64,28 @@ def login(
             "role": "admin",
             "detail": "Проверка входа выключена",
         }
-    return auth_service.login(session, payload.login, payload.password)
+
+    # Считаем попытки и по адресу, и по логину: первое мешает перебирать
+    # пароли с одной машины, второе — распределённому перебору одной
+    # учётной записи с разных адресов
+    keys = (
+        f"ip:{ratelimit.client_key(request)}",
+        f"login:{payload.login.strip().lower()}",
+    )
+    for key in keys:
+        ratelimit.check(key)
+
+    try:
+        result = auth_service.login(session, payload.login, payload.password)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            for key in keys:
+                ratelimit.register_failure(key)
+        raise
+
+    for key in keys:
+        ratelimit.register_success(key)
+    return result
 
 
 @router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Выйти")

@@ -61,6 +61,19 @@ class Scheduler:
         except Exception as exc:  # noqa: BLE001 — уборка не должна ронять цикл
             logger.warning("Очистка котировок не выполнена: %s", exc)
 
+        # Просроченные сессии удалялись только при обращении с их токеном, то
+        # есть у брошенных входов — никогда. Токен в такой строке остаётся
+        # рабочим ключом, если база утечёт, поэтому убираем их по расписанию
+        try:
+            from .auth import purge_expired_sessions
+
+            with session_scope() as session:
+                removed = purge_expired_sessions(session)
+            if removed:
+                logger.info("Удалено просроченных сессий: %s", removed)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Очистка сессий не выполнена: %s", exc)
+
         with session_scope() as session:
             if settings.snapshots_enabled:
                 # Снимок по каждому портфелю и общий по всем сразу

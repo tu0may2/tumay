@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     #: Менее безопасно, чем один пароль на человека — используйте осознанно.
     extra_passwords: str = ""
     session_hours: int = 12
+    #: Сторонние адреса, которым разрешено обращаться к API из браузера.
+    #: Пусто — кросс-доменные запросы запрещены совсем, и это верно для
+    #: обычной установки: интерфейс отдаётся с того же адреса, что и API.
+    #: Заполнять только если интерфейс вынесен на отдельный домен.
+    #: Через запятую: TREASURY_CORS_ORIGINS=https://terminal.example.ru
+    cors_origins: str = ""
 
     # Налоги для расчёта доходности после налогообложения, %
     profit_tax_pct: float = 25.0
@@ -113,6 +119,12 @@ class Settings(BaseSettings):
     def extra_password_list(self) -> tuple[str, ...]:
         return tuple(
             item.strip() for item in self.extra_passwords.split(",") if item.strip()
+        )
+
+    @property
+    def cors_origin_list(self) -> tuple[str, ...]:
+        return tuple(
+            item.strip() for item in self.cors_origins.split(",") if item.strip()
         )
 
 

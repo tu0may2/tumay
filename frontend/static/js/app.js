@@ -3598,8 +3598,14 @@
       verdict = `<span class="dim">${days === 0 ? 'сегодня' : `через ${days} ${fmt.plural(days, 'день', 'дня', 'дней')}`}</span>`;
     }
 
+    // Адрес приходит с разбора чужой страницы. Экранирование защищает от
+    // выхода из атрибута, но не от схемы javascript: — её браузер выполнит
+    // по нажатию. Поэтому пропускаем только обычные ссылки.
+    const safeUrl = (url) => (/^https?:\/\//i.test(String(url || '')) ? url : null);
     const links = (meeting.links || [])
-      .map((link) => `<a href="${fmt.esc(link.url)}" target="_blank" rel="noopener">${fmt.esc(link.title)}</a>`)
+      .map((link) => ({ url: safeUrl(link.url), title: link.title }))
+      .filter((link) => link.url)
+      .map((link) => `<a href="${fmt.esc(link.url)}" target="_blank" rel="noopener noreferrer">${fmt.esc(link.title)}</a>`)
       .join(' · ');
 
     return `
