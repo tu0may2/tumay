@@ -44,6 +44,25 @@ logger = logging.getLogger(__name__)
 _FIXED_COUPON_TYPES = ("Фикс с известным купоном", "Дисконтная облигация")
 
 
+#: Московское время: сервер живёт по UTC, биржа — по MSK
+_MSK_OFFSET = timedelta(hours=3)
+
+
+def is_trading_time(moment: datetime | None = None) -> bool:
+    """Идут ли сейчас торги на бирже — грубо, по дню недели и часу.
+
+    Точный календарь торговых дней у нас не заведён, поэтому праздники сюда
+    не попадают: в праздник срезы соберутся зря. Это осознанный размен —
+    выходные и ночи дают больше половины лишних строк, а праздников в году
+    полтора десятка, и отдельный календарь ради них не окупается.
+    """
+    now = (moment or datetime.utcnow()) + _MSK_OFFSET
+    # Суббота и воскресенье
+    if now.weekday() >= 5:
+        return False
+    return settings.trading_hours_start_msk <= now.hour < settings.trading_hours_end_msk
+
+
 def _to_float(value: Any) -> float | None:
     """Мягкое приведение: у карточки биржи поля бывают пустыми строками."""
     if value in (None, ""):
@@ -179,8 +198,19 @@ class Collector:
                     run.error = error
 
     # ------------------------------------------------------------------
-    async def collect_quotes(self, boards: Sequence[str] | None = None) -> int:
-        """Снять текущий рыночный срез по площадкам и сохранить его."""
+    async def collect_quotes(
+        self, boards: Sequence[str] | None = None, *, force: bool = False
+    ) -> int:
+        """Снять текущий рыночный срез по площадкам и сохранить его.
+
+        Вне часов торгов срез не снимаем: цены не меняются, а строки копятся.
+        ``force`` обходит проверку — им пользуется кнопка «Собрать данные»,
+        когда человек осознанно просит обновить прямо сейчас.
+        """
+        if not force and settings.collect_in_trading_hours_only and not is_trading_time():
+            logger.debug("Срез пропущен: биржа закрыта")
+            return 0
+
         boards = list(boards or _default_boards())
         with self._run("moex", "quotes") as counter:
             async with MoexSource() as moex:
@@ -747,7 +777,9 @@ class Collector:
         async with self._lock:
             summary: dict[str, int] = {}
             steps: list[tuple[str, Any]] = [
-                ("quotes", self.collect_quotes()),
+                # Полный сбор запускают руками кнопкой «Собрать данные» и при
+                # старте — тут срез нужен независимо от часов работы биржи
+                ("quotes", self.collect_quotes(force=True)),
                 ("reference", self.collect_reference()),
             ]
             if with_history:
