@@ -101,6 +101,7 @@ def liquid_assets(
     *,
     portfolio: str | None = None,
     method: str | None = None,
+    collateral: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Ликвидные активы, которые терминал знает сам.
 
@@ -112,7 +113,11 @@ def liquid_assets(
     from .collateral import portfolio_collateral
 
     cash = cash_position(session, portfolio=portfolio)
-    collateral = portfolio_collateral(session, portfolio=portfolio, method=method)
+    # Залоговый расчёт разворачивает весь портфель по ФИФО — самая тяжёлая
+    # операция в терминале. Готовый результат принимаем снаружи, чтобы одна
+    # страница не считала позиции дважды
+    if collateral is None:
+        collateral = portfolio_collateral(session, portfolio=portfolio, method=method)
 
     # Берём именно остаток на счетах, а не total_liquidity_rub: тот включает
     # размещения, а депозит на срок — не высоколиквидный актив, его нельзя
@@ -266,7 +271,14 @@ def report(
     if overrides:
         inputs = {**inputs, **{k: v for k, v in overrides.items() if v is not None}}
 
-    assets = liquid_assets(session, portfolio=portfolio, method=method)
+    from .collateral import portfolio_collateral
+
+    # Один расчёт позиций на весь ответ: он же идёт и в Лам, и в таблицу
+    # залогового потенциала на той же странице
+    collateral = portfolio_collateral(session, portfolio=portfolio, method=method)
+    assets = liquid_assets(
+        session, portfolio=portfolio, method=method, collateral=collateral
+    )
     ratios = compute(inputs, lam_portfolio=assets["total_rub"])
 
     return {
@@ -274,6 +286,7 @@ def report(
         "inputs": inputs,
         "fields": list(INPUT_FIELDS),
         "assets": assets,
+        "collateral": collateral,
         "ratios": [ratio.as_dict() for ratio in ratios],
         "breaches": [
             ratio.code for ratio in ratios if ratio.compliant is False

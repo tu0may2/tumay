@@ -2595,7 +2595,9 @@
         </div>`);
 
       renderRatioInputs(data);
-      renderCollateral();
+      // Залоговую таблицу рисуем из того же ответа: отдельный запрос заставил
+      // бы сервер второй раз развернуть весь портфель по ФИФО
+      renderCollateral(data.collateral);
       renderLombard();
     } catch (error) {
       failure(kpi, error);
@@ -2681,11 +2683,13 @@
     }
   }
 
-  async function renderCollateral() {
+  async function renderCollateral(provided) {
     const container = $('#collateral-table');
     loading(container);
     try {
-      const data = await api.portfolioCollateral(state.portfolioName);
+      // Данные приходят готовыми со страницы нормативов; отдельный запрос —
+      // только когда таблицу открывают саму по себе
+      const data = provided || await api.portfolioCollateral(state.portfolioName);
       $('#collateral-summary').innerHTML =
         `можно поднять <b>${fmt.money(data.pledgeable_rub)} ₽</b> · ` +
         `залоговых ${data.eligible_positions} из ${data.total_positions}` +

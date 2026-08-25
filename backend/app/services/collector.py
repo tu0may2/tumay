@@ -476,10 +476,19 @@ class Collector:
 
             with session_scope() as session:
                 fresh = {row["isin"] for row in rows}
-                # Сначала убираем выбывшие, затем обновляем оставшиеся
-                gone = session.execute(
-                    delete(CbrCollateral).where(CbrCollateral.isin.notin_(fresh))
-                ).rowcount or 0
+                # Разницу считаем в питоне и удаляем порциями. Один запрос с
+                # условием «не входит в список» подставил бы сотни параметров
+                # сразу — SQLite ограничивает их число, и с ростом перечня
+                # такой запрос однажды перестал бы выполняться
+                stored = set(
+                    session.execute(select(CbrCollateral.isin)).scalars().all()
+                )
+                gone = 0
+                obsolete = sorted(stored - fresh)
+                for chunk in _chunks(obsolete, 200):
+                    gone += session.execute(
+                        delete(CbrCollateral).where(CbrCollateral.isin.in_(list(chunk)))
+                    ).rowcount or 0
 
                 counter["rows"] = _upsert(
                     session,
