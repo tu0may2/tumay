@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from html import unescape
 from typing import Any
 from xml.etree import ElementTree
 
@@ -42,6 +43,11 @@ RUONIA_METRICS: tuple[tuple[str, str, int], ...] = (
 )
 
 _TABLE_RE = re.compile(r'<table[^>]*class="data"[^>]*>(.*?)</table>', re.S)
+#: У таблицы обеспечения класс «data spaced», поэтому нужен разбор посвободнее
+_ANY_DATA_TABLE_RE = re.compile(
+    r'<table[^>]*class="[^"]*\bdata\b[^"]*"[^>]*>(.*?)</table>', re.S
+)
+_ISIN_RE = re.compile(r"^[A-Z]{2}[0-9A-Z]{10}$")
 _ROW_RE = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S)
 _CELL_RE = re.compile(r"<t[dh][^>]*>(.*?)</t[dh]>", re.S)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -91,6 +97,77 @@ def _absolute_url(href: str) -> str:
     if lowered.startswith(("http://", "https://")):
         return stripped
     return f"{settings.cbr_base_url.rstrip('/')}/{stripped.lstrip('/')}"
+
+
+def _clean_cell(cell: str) -> str:
+    """Текст ячейки без разметки, сущностей и лишних пробелов."""
+    return _SPACES_RE.sub(" ", unescape(_TAG_RE.sub("", cell))).replace("\xa0", " ").strip()
+
+
+def _to_number(text: str) -> float | None:
+    """Число из ячейки таблицы ЦБ: разделитель разрядов пробелом, запятая."""
+    cleaned = text.replace("\xa0", "").replace(" ", "").replace(",", ".")
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+#: Коэффициент бывает записан списком: «0.98 для Кредиты (МСП ОФЗ); 1 для
+#: Кредиты ОМ на 1 день; …». Числа периодов («от 2 до 30 дней») в этот шаблон
+#: не попадают: у коэффициента после числа обязательно идёт слово «для»
+_HAIRCUT_ITEM_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s+для", re.I)
+
+
+def _parse_haircut(text: str) -> tuple[float | None, str | None]:
+    """Поправочный коэффициент и его исходная запись.
+
+    Когда ЦБ задаёт разные коэффициенты под разные виды кредитов, берём
+    наименьший: он отвечает на вопрос «на что можно рассчитывать наверняка».
+    Взять больший значило бы показать ликвидность, которой в общем случае нет.
+    Полную запись сохраняем рядом — по ней видно, откуда взялось число.
+    """
+    cleaned = text.strip()
+    if not cleaned:
+        return None, None
+
+    simple = _to_number(cleaned)
+    if simple is not None:
+        return simple, None
+
+    values = [
+        value
+        for value in (
+            _to_number(match) for match in _HAIRCUT_ITEM_RE.findall(cleaned)
+        )
+        if value is not None
+    ]
+    if not values:
+        return None, cleaned
+    return min(values), cleaned
+
+
+def _parse_dotted_date(text: str) -> date | None:
+    """Дата вида 27.02.2029. У бессрочных выпусков ячейка пустая."""
+    cleaned = text.strip()
+    if not cleaned:
+        return None
+    try:
+        return datetime.strptime(cleaned[:10], "%d.%m.%Y").date()
+    except ValueError:
+        return None
+
+
+#: Дата, на которую опубликован список обеспечения. Ищем и «на 19.08.2026»,
+#: и просто дату в заголовке — вёрстку ЦБ время от времени меняет
+_PAGE_DATE_RE = re.compile(r"(?:на|по состоянию на)\s*(\d{2}\.\d{2}\.\d{4})", re.I)
+
+
+def _page_date(text: str) -> date | None:
+    match = _PAGE_DATE_RE.search(_TAG_RE.sub(" ", text))
+    return _parse_dotted_date(match.group(1)) if match else None
 
 
 def _localname(tag: str) -> str:
@@ -357,6 +434,71 @@ class CbrSource(HttpSource):
             seen.add(key)
             unique.append(event)
         return unique
+
+    async def fetch_collateral_securities(self) -> list[dict[str, Any]]:
+        """Список бумаг, принимаемых в обеспечение по кредитам Банка России.
+
+        В обиходе — ломбардный список. Для казначейства он отвечает на вопрос
+        «что из портфеля можно быстро превратить в деньги, не продавая»:
+        заложить бумагу в ЦБ дешевле и быстрее, чем продать её на рынке,
+        особенно когда рынок и без того просел.
+
+        Кроме самого факта участия важен поправочный коэффициент: под бумагу
+        с коэффициентом 0,9 дадут лишь девять десятых её оценки. Без него
+        «бумага в списке» — знание неполное.
+
+        Машиночитаемого канала у ЦБ нет, разбираем таблицу страницы. Строка с
+        единственной ячейкой — заголовок раздела (гособлигации, корпоративные,
+        ипотечные), он относится ко всем последующим бумагам.
+        """
+        try:
+            response = await self.get("/hd_base/bankpapers/")
+        except Exception as exc:  # noqa: BLE001 — список не критичен для работы
+            logger.warning("cbr: список обеспечения недоступен (%s)", exc)
+            return []
+
+        table = _ANY_DATA_TABLE_RE.search(response.text)
+        if table is None:
+            logger.warning("cbr: на странице обеспечения не найдена таблица")
+            return []
+
+        as_of = _page_date(response.text) or date.today()
+        items: list[dict[str, Any]] = []
+        group: str | None = None
+
+        for row in _ROW_RE.findall(table.group(1)):
+            raw_cells = _CELL_RE.findall(row)
+            cells = [_clean_cell(cell) for cell in raw_cells]
+
+            if len(cells) == 1:
+                if cells[0]:
+                    group = cells[0]
+                continue
+            if len(cells) < 8:
+                continue
+
+            isin = cells[5].upper()
+            if not _ISIN_RE.match(isin):
+                # Шапка таблицы и служебные строки сюда же
+                continue
+
+            items.append(
+                {
+                    "isin": isin,
+                    "reg_number": cells[0] or None,
+                    "issuer": cells[1] or None,
+                    "price_pct": _to_number(cells[2]),
+                    "value_rub": _to_number(cells[3]),
+                    **dict(zip(("haircut", "haircut_note"), _parse_haircut(cells[4]))),
+                    "maturity_date": _parse_dotted_date(cells[6]),
+                    "mechanism": cells[7] or None,
+                    "group_title": group,
+                    "as_of": as_of,
+                }
+            )
+
+        logger.info("cbr: в списке обеспечения %s бумаг на %s", len(items), as_of)
+        return items
 
     async def fetch_currency_ids(self) -> dict[str, str]:
         """Соответствие буквенного кода валюты внутреннему коду ЦБ (R01235 и т.п.).

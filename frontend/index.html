@@ -42,6 +42,7 @@
     <button class="tab" data-view="bonds" type="button">Облигации</button>
     <button class="tab" data-view="portfolio" type="button">Портфель</button>
     <button class="tab" data-view="cash" type="button">Деньги</button>
+    <button class="tab" data-view="ratios" type="button">Нормативы</button>
     <button class="tab" data-view="imports" type="button">Импорт и сверка</button>
     <button class="tab" data-view="signals" type="button">Сигналы</button>
     <button class="tab" data-view="admin" type="button">Настройки</button>
@@ -682,6 +683,92 @@ SU26238RMFS4
         </form>
         <div class="card__body table-wrap" id="placements-table" style="max-height:340px"></div>
         <p class="card__note">Проценты начисляются по фактическому числу дней от даты начала к сегодняшнему дню, база 365 дней. Депозит и обратное РЕПО добавляют ликвидность к возврату, РЕПО и кредит — уменьшают.</p>
+      </article>
+    </section>
+
+    <!-- Нормативы ликвидности -->
+    <section class="view" id="view-ratios">
+      <div class="kpi-grid" id="ratios-kpi"></div>
+
+      <div class="grid grid--2">
+        <article class="card">
+          <header class="card__head">
+            <h2>Расчёт нормативов</h2>
+            <span class="card__hint" id="ratios-asof"></span>
+          </header>
+          <div class="card__body" id="ratios-breakdown"></div>
+          <p class="card__note">Инструкция Банка России № 199-И. Ликвидные активы терминал считает сам: деньги на счетах плюс бумаги, принимаемые ЦБ в обеспечение, по залоговой стоимости с поправочным коэффициентом. Срочные депозиты в Лам не входят — их нельзя обратить в деньги сегодня.</p>
+        </article>
+
+        <article class="card">
+          <header class="card__head">
+            <h2>Пересчёт под сделку</h2>
+            <span class="card__hint">что будет, если купить</span>
+          </header>
+          <div class="card__body">
+            <div class="filters">
+              <label class="field">
+                <span>Сумма покупки, млн ₽</span>
+                <input id="sim-amount" type="number" step="1" value="100">
+              </label>
+              <label class="field">
+                <span>Бумага</span>
+                <select id="sim-eligible">
+                  <option value="true">В списке обеспечения ЦБ</option>
+                  <option value="false">Не в списке</option>
+                </select>
+              </label>
+              <button class="btn btn--primary btn--sm" id="sim-run" type="button">Пересчитать</button>
+            </div>
+          </div>
+          <div class="card__body" id="sim-result"></div>
+          <p class="card__note">Залоговая бумага возвращает часть денег в ликвидность — ЦБ даёт их под залог в тот же день. Незалоговая выводит сумму целиком, даже если она надёжная и доходная. Разница видна до сделки, а не после отчёта.</p>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Балансовые данные</h2>
+          <span class="card__hint">терминал не ведёт баланс банка — эти части вводятся</span>
+          <div class="card__tools">
+            <button class="btn btn--primary btn--sm" id="ratios-save" type="button">Сохранить</button>
+            <span class="form-msg" id="ratios-msg"></span>
+          </div>
+        </header>
+        <div class="card__body" id="ratios-inputs"></div>
+      </article>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Залоговый потенциал портфеля</h2>
+          <span class="card__hint" id="collateral-summary"></span>
+        </header>
+        <div class="card__body table-wrap" id="collateral-table" style="max-height:420px"></div>
+        <p class="card__note">Сколько денег можно поднять под портфель, не продавая бумаги. Заложить в ЦБ быстрее и дешевле, чем продать, — особенно когда деньги нужны срочно, а рынок просел. Покрытие показывает, какую долю рыночной стоимости даст ЦБ после поправочного коэффициента.</p>
+      </article>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Список обеспечения Банка России</h2>
+          <span class="card__hint" id="lombard-summary"></span>
+        </header>
+        <div class="card__body">
+          <div class="filters">
+            <label class="field">
+              <span>Поиск</span>
+              <input id="lombard-search" placeholder="ISIN, эмитент или госномер">
+            </label>
+            <label class="field">
+              <span>Механизм</span>
+              <select id="lombard-mechanism">
+                <option value="">Любой</option>
+                <option value="ОМ">Основной</option>
+                <option value="ДМ">Дополнительный</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <div class="card__body table-wrap" id="lombard-table" style="max-height:520px"></div>
       </article>
     </section>
 

@@ -215,6 +215,23 @@
     portfolioImportApply: (payload) =>
       request('/api/import/portfolio/apply', { method: 'POST', body: payload }),
 
+    // Нормативы, обеспечение ЦБ и график выплат
+    ratios: (portfolio, onDate) =>
+      request('/api/ratios', { params: { portfolio, on_date: onDate } }),
+    saveRatioInputs: (body) =>
+      request('/api/ratios/inputs', { method: 'PUT', body }),
+    simulateRatios: (amountRub, eligible, portfolio) =>
+      request('/api/ratios/simulate', {
+        params: { amount_rub: amountRub, eligible, portfolio },
+      }),
+    portfolioCollateral: (portfolio) =>
+      request('/api/ratios/collateral', { params: { portfolio } }),
+    collateralList: (params) => request('/api/collateral', { params }),
+    payments: (secid, quantity) =>
+      request(`/api/instruments/${encodeURIComponent(secid)}/payments`, {
+        params: { quantity },
+      }),
+
     // Переоценка и виды учёта
     revaluation: (name) => request('/api/portfolio/revaluation', { params: { name } }),
     downloadRevaluation: (name, fmt = 'xlsx') =>

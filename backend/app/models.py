@@ -298,6 +298,94 @@ class CorpAction(Base):
     source: Mapped[str] = mapped_column(String(16), default="nsd")
 
 
+class RatioInput(Base):
+    """Балансовые составляющие нормативов ликвидности Н2, Н3, Н4.
+
+    Терминал ведёт портфель бумаг и деньги, но не весь баланс банка:
+    обязательства до востребования, капитал и долгосрочные требования он
+    знать не может. Поэтому они вводятся руками и хранятся здесь — чтобы не
+    вбивать их заново при каждом расчёте.
+
+    Одна строка на дату: нормативы считаются на отчётную дату, и полезно
+    видеть, как они менялись.
+    """
+
+    __tablename__ = "ratio_inputs"
+    __table_args__ = (UniqueConstraint("as_of", name="uq_ratio_input_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    as_of: Mapped[date] = mapped_column(Date, index=True)
+
+    # --- Н2, мгновенная ликвидность ---
+    #: Овм — обязательства до востребования
+    ovm: Mapped[float | None] = mapped_column(Float)
+    #: Овм* — минимальный совокупный остаток по счетам до востребования
+    ovm_min: Mapped[float | None] = mapped_column(Float)
+
+    # --- Н3, текущая ликвидность ---
+    #: Овт — обязательства до востребования и сроком до 30 дней
+    ovt: Mapped[float | None] = mapped_column(Float)
+    #: Овт* — минимальный совокупный остаток по таким счетам
+    ovt_min: Mapped[float | None] = mapped_column(Float)
+    #: Лат сверх портфеля: прочие ликвидные активы до 30 дней
+    lat_other: Mapped[float | None] = mapped_column(Float)
+    #: Лам сверх портфеля: прочие высоколиквидные активы
+    lam_other: Mapped[float | None] = mapped_column(Float)
+
+    # --- Н4, долгосрочная ликвидность ---
+    #: Крд — кредитные требования со сроком свыше 365 дней
+    krd: Mapped[float | None] = mapped_column(Float)
+    #: К — собственные средства (капитал)
+    capital: Mapped[float | None] = mapped_column(Float)
+    #: ОД — обязательства со сроком свыше 365 дней
+    od: Mapped[float | None] = mapped_column(Float)
+    #: О* — минимальный совокупный остаток по счетам до 365 дней
+    o_min: Mapped[float | None] = mapped_column(Float)
+
+    comment: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CbrCollateral(Base):
+    """Бумага из списка принимаемых в обеспечение по кредитам Банка России.
+
+    В обиходе — «ломбардный список». Держим отдельной таблицей, а не полями
+    в справочнике инструментов: список публикуется по ISIN и не совпадает с
+    тем, что торгуется на выбранных нами площадках — в нём есть выпуски,
+    которых у нас нет, и наоборот. Отдельная таблица к тому же хранит дату
+    публикации: ЦБ пересматривает и состав, и оценки.
+    """
+
+    __tablename__ = "cbr_collateral"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    isin: Mapped[str] = mapped_column(String(16), unique=True, index=True)
+    reg_number: Mapped[str | None] = mapped_column(String(32))
+    issuer: Mapped[str | None] = mapped_column(String(256))
+    #: Цена, по которой ЦБ оценивает бумагу, в процентах от номинала
+    price_pct: Mapped[float | None] = mapped_column(Float)
+    #: Стоимость одной бумаги по методике ЦБ, рублей
+    value_rub: Mapped[float | None] = mapped_column(Float)
+    #: Поправочный коэффициент: доля стоимости, которую ЦБ примет в
+    #: обеспечение. 0,98 — почти полная стоимость, 0,90 — со скидкой в 10%
+    haircut: Mapped[float | None] = mapped_column(Float)
+    #: Полная запись коэффициента, когда ЦБ задал разные значения под разные
+    #: виды кредитов: по ней видно, откуда взялось число выше
+    haircut_note: Mapped[str | None] = mapped_column(Text)
+    #: ОМ — основной механизм, ДМ — дополнительный
+    mechanism: Mapped[str | None] = mapped_column(String(8), index=True)
+    #: Раздел списка: гособлигации, субфедеральные, корпоративные, ипотечные
+    group_title: Mapped[str | None] = mapped_column(String(256))
+    maturity_date: Mapped[date | None] = mapped_column(Date)
+    #: На какую дату опубликован список
+    as_of: Mapped[date | None] = mapped_column(Date, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
 #: Виды учёта портфеля. Разница не косметическая: торговый портфель
 #: переоценивается по рынку, а удерживаемый до погашения ведётся по
 #: амортизированной стоимости — рыночная цена для него справочная.

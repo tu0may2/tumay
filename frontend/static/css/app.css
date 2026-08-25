@@ -818,3 +818,35 @@ tr.row--warn td { background: color-mix(in srgb, var(--warn) 10%, transparent); 
 
 /* Строка периода без торгов: цены пустые, НКД есть */
 tr.row--quiet td { color: var(--text-mute); background: color-mix(in srgb, var(--bg-sunken) 55%, transparent); }
+
+/* Нормативы: разложение расчёта — формула и обе её части.
+   Показываем числитель и знаменатель отдельно, потому что норматив сверяют
+   с отчётностью, и «просто процент» проверить нечем */
+.ratio-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  padding: 10px 12px;
+  margin-bottom: 9px;
+}
+
+.ratio-row--assets { border-style: dashed; }
+
+.ratio-row__head {
+  display: flex; align-items: baseline; gap: 8px;
+  margin-bottom: 6px;
+}
+
+.ratio-row__head > :last-child { margin-left: auto; font-family: var(--mono); }
+
+.ratio-row__formula {
+  font-family: var(--mono); font-size: 11.5px;
+  color: var(--text-mute); margin-bottom: 7px;
+}
+
+.ratio-row__parts {
+  display: grid; grid-template-columns: 1fr auto;
+  gap: 3px 12px; font-size: 12.5px;
+}
+
+.ratio-row__parts span { color: var(--text-mute); }
+.ratio-row__parts b { font-family: var(--mono); text-align: right; }

@@ -21,6 +21,7 @@ from ..config import settings
 from ..db import session_scope
 from ..models import (
     Bar,
+    CbrCollateral,
     Deal,
     CollectionRun,
     CorpAction,
@@ -458,6 +459,44 @@ class Collector:
             counter["rows"] = len(found)
             return len(found)
 
+    async def collect_cbr_collateral(self) -> int:
+        """Список бумаг, принимаемых ЦБ в обеспечение («ломбардный список»).
+
+        Состав и оценки ЦБ пересматривает регулярно, поэтому строки, которых
+        в свежем списке нет, удаляем: бумага, выбывшая из перечня, перестала
+        быть залоговой, и оставить её отмеченной — значит показать ликвидность,
+        которой нет.
+        """
+        async with CbrSource() as cbr:
+            rows = await cbr.fetch_collateral_securities()
+
+        with self._run("cbr", "collateral") as counter:
+            if not rows:
+                return 0
+
+            with session_scope() as session:
+                fresh = {row["isin"] for row in rows}
+                # Сначала убираем выбывшие, затем обновляем оставшиеся
+                gone = session.execute(
+                    delete(CbrCollateral).where(CbrCollateral.isin.notin_(fresh))
+                ).rowcount or 0
+
+                counter["rows"] = _upsert(
+                    session,
+                    CbrCollateral,
+                    rows,
+                    ("isin",),
+                    (
+                        "reg_number", "issuer", "price_pct", "value_rub",
+                        "haircut", "haircut_note", "mechanism", "group_title",
+                        "maturity_date",
+                        "as_of",
+                    ),
+                )
+                if gone:
+                    logger.info("Из списка обеспечения выбыло бумаг: %s", gone)
+            return counter["rows"]
+
     async def collect_rate_calendar(self) -> int:
         """Календарь заседаний ЦБ по ключевой ставке.
 
@@ -712,6 +751,7 @@ class Collector:
             steps.append(("coupon_benchmarks", self.collect_coupon_benchmarks()))
             steps.append(("rate_calendar", self.collect_rate_calendar()))
             steps.append(("security_types", self.collect_security_types()))
+            steps.append(("cbr_collateral", self.collect_cbr_collateral()))
 
             for name, coro in steps:
                 try:

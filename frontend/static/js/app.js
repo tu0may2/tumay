@@ -2519,6 +2519,238 @@
   }
 
   // ------------------------------------------------------------------
+  // Нормативы ликвидности
+  // ------------------------------------------------------------------
+
+  /** Плитка норматива: значение, предел и запас до него. */
+  function ratioCard(ratio) {
+    const state_ = ratio.compliant === null ? 'dim'
+      : ratio.compliant ? 'up' : 'down';
+    const limitText = ratio.direction === 'minimum'
+      ? `не ниже ${fmt.num(ratio.limit, 0)}%`
+      : `не выше ${fmt.num(ratio.limit, 0)}%`;
+    return {
+      label: `${ratio.code} · ${ratio.title}`,
+      value: ratio.value === null
+        ? '<span class="dim">—</span>'
+        : `<span class="${state_}">${fmt.pct(ratio.value, 2)}</span>`,
+      meta: ratio.value === null
+        ? 'не хватает данных'
+        : `${limitText} · запас ${fmt.num(ratio.cushion, 2)} п.п.`,
+    };
+  }
+
+  async function renderRatios() {
+    const kpi = $('#ratios-kpi');
+    loading(kpi);
+
+    try {
+      const data = await api.ratios(state.portfolioName);
+      state.ratios = data;
+
+      kpi.innerHTML = data.ratios
+        .map(ratioCard)
+        .map((card) => `
+          <div class="kpi">
+            <div class="kpi__label">${card.label}</div>
+            <div class="kpi__value">${card.value}</div>
+            <div class="kpi__meta">${card.meta}</div>
+          </div>`)
+        .join('');
+
+      $('#ratios-asof').textContent = data.as_of ? `на ${fmt.date(data.as_of)}` : '';
+
+      // Разложение: формула и обе части, чтобы расчёт можно было проверить
+      $('#ratios-breakdown').innerHTML = data.ratios
+        .map((ratio) => `
+          <div class="ratio-row">
+            <div class="ratio-row__head">
+              <b>${fmt.esc(ratio.code)}</b>
+              <span class="dim">${fmt.esc(ratio.title)}</span>
+              <span class="${ratio.compliant === null ? 'dim' : ratio.compliant ? 'up' : 'down'}">
+                ${ratio.value === null ? '—' : fmt.pct(ratio.value, 2)}
+              </span>
+            </div>
+            <div class="ratio-row__formula">${fmt.esc(ratio.formula)}</div>
+            <div class="ratio-row__parts">
+              <span>${fmt.esc(ratio.numerator_title)}</span><b>${fmt.money(ratio.numerator)} ₽</b>
+              <span>${fmt.esc(ratio.denominator_title)}</span><b>${fmt.money(ratio.denominator)} ₽</b>
+            </div>
+          </div>`)
+        .join('');
+
+      // Из чего терминал собрал ликвидные активы
+      const assets = data.assets;
+      $('#ratios-breakdown').insertAdjacentHTML('beforeend', `
+        <div class="ratio-row ratio-row--assets">
+          <div class="ratio-row__head"><b>Лам от терминала</b>
+            <span class="dim">деньги и залоговые бумаги</span>
+            <b>${fmt.money(assets.total_rub)} ₽</b>
+          </div>
+          <div class="ratio-row__parts">
+            <span>Деньги на счетах</span><b>${fmt.money(assets.cash_rub)} ₽</b>
+            <span>Под залог бумаг (${assets.eligible_positions} из ${assets.total_positions})</span>
+            <b>${fmt.money(assets.pledgeable_rub)} ₽</b>
+          </div>
+        </div>`);
+
+      renderRatioInputs(data);
+      renderCollateral();
+      renderLombard();
+    } catch (error) {
+      failure(kpi, error);
+    }
+  }
+
+  /** Форма балансовых данных, сгруппированная по нормативам. */
+  function renderRatioInputs(data) {
+    const byRatio = {};
+    data.fields.forEach((field) => {
+      (byRatio[field.ratio] = byRatio[field.ratio] || []).push(field);
+    });
+
+    $('#ratios-inputs').innerHTML = Object.entries(byRatio)
+      .map(([code, fields]) => `
+        <div class="section-title">${fmt.esc(code)}</div>
+        <div class="filters">
+          ${fields.map((field) => `
+            <label class="field">
+              <span>${fmt.esc(field.title)}</span>
+              <input type="number" step="any" data-ratio-field="${fmt.esc(field.code)}"
+                     value="${data.inputs[field.code] ?? ''}" placeholder="₽">
+            </label>`).join('')}
+        </div>`)
+      .join('');
+  }
+
+  async function saveRatioInputs() {
+    const message = $('#ratios-msg');
+    const body = {};
+    $$('[data-ratio-field]').forEach((input) => {
+      const raw = input.value.trim();
+      body[input.dataset.ratioField] = raw === '' ? null : parseFloat(raw);
+    });
+
+    try {
+      await api.saveRatioInputs(body);
+      message.textContent = 'Сохранено';
+      message.className = 'form-msg form-msg--ok';
+      state.loaded.ratios = false;
+      await renderRatios();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
+  async function runSimulation() {
+    const container = $('#sim-result');
+    loading(container);
+    try {
+      const millions = parseFloat($('#sim-amount').value) || 0;
+      const result = await api.simulateRatios(
+        millions * 1e6,
+        $('#sim-eligible').value === 'true',
+        state.portfolioName
+      );
+
+      const warn = result.insufficient
+        ? `<p class="card__note warn">Сделка неисполнима: не хватает ${fmt.money(result.shortfall_rub)} ₽ ликвидных активов.</p>`
+        : '';
+
+      container.innerHTML = `
+        ${warn}
+        <div class="reval-total__grid" style="margin-bottom:10px">
+          <span>Изменение ликвидности</span>
+          <b class="${fmt.trendClass(result.liquidity_delta_rub)}">${fmt.money(result.liquidity_delta_rub)} ₽</b>
+          ${result.average_haircut ? `<span>Средний коэффициент ЦБ</span><b>${fmt.num(result.average_haircut, 3)}</b>` : ''}
+        </div>
+        <table class="table"><thead><tr>
+          <th>Норматив</th><th class="num">Сейчас</th><th class="num">После</th><th class="num">Δ</th>
+        </tr></thead><tbody>
+        ${result.changes.map((change) => `
+          <tr class="${change.breaks ? 'row--bad' : ''}">
+            <td>${fmt.esc(change.code)}${change.breaks ? ' <span class="badge badge--down">нарушит</span>' : ''}</td>
+            <td class="num">${change.before === null ? '—' : fmt.pct(change.before, 2)}</td>
+            <td class="num">${change.after === null ? '—' : fmt.pct(change.after, 2)}</td>
+            <td class="num ${fmt.trendClass(change.delta)}">${change.delta === null ? '—' : fmt.num(change.delta, 2)}</td>
+          </tr>`).join('')}
+        </tbody></table>`;
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  async function renderCollateral() {
+    const container = $('#collateral-table');
+    loading(container);
+    try {
+      const data = await api.portfolioCollateral(state.portfolioName);
+      $('#collateral-summary').innerHTML =
+        `можно поднять <b>${fmt.money(data.pledgeable_rub)} ₽</b> · ` +
+        `залоговых ${data.eligible_positions} из ${data.total_positions}` +
+        (data.eligible_share_pct !== null ? ` (${fmt.pct(data.eligible_share_pct, 1)} портфеля)` : '');
+
+      renderTable(container, [
+        { title: 'Бумага', render: (row) => secCell(row) },
+        {
+          title: 'В списке ЦБ',
+          render: (row) => row.cbr_eligible
+            ? `<span class="badge badge--up">${fmt.esc(row.cbr_mechanism || 'да')}</span>`
+            : '<span class="dim">нет</span>',
+        },
+        { title: 'Кол-во', className: 'num', render: (row) => fmt.int(row.quantity) },
+        { title: 'Рыночная, ₽', className: 'num', render: (row) => fmt.money(row.market_value_rub) },
+        { title: 'Коэф. ЦБ', className: 'num', render: (row) => fmt.num(row.cbr_haircut, 3) },
+        {
+          title: 'Под залог, ₽', className: 'num',
+          render: (row) => row.pledge_value_rub === null
+            ? '<span class="dim">—</span>'
+            : `<b>${fmt.money(row.pledge_value_rub)}</b>`,
+        },
+        { title: 'Покрытие', className: 'num', render: (row) => fmt.pct(row.coverage_pct, 1) },
+      ], data.items, {
+        rowKey: (row) => row.secid,
+        onRowClick: openInstrument,
+        emptyMessage: 'Нет открытых позиций',
+      });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  async function renderLombard() {
+    const container = $('#lombard-table');
+    loading(container);
+    try {
+      const data = await api.collateralList({
+        search: $('#lombard-search').value.trim() || undefined,
+        mechanism: $('#lombard-mechanism').value || undefined,
+        limit: 500,
+      });
+      $('#lombard-summary').textContent =
+        `${fmt.int(data.total)} ${fmt.plural(data.total, 'бумага', 'бумаги', 'бумаг')}` +
+        (data.as_of ? ` · на ${fmt.date(data.as_of)}` : '');
+
+      renderTable(container, [
+        { title: 'ISIN', render: (row) => `<span style="font-family:var(--mono);font-size:11px">${fmt.esc(row.isin)}</span>` },
+        { title: 'Эмитент', render: (row) => fmt.esc(row.issuer || '—') },
+        { title: 'Раздел', render: (row) => `<span class="dim">${fmt.esc(row.group || '—')}</span>` },
+        { title: 'Цена ЦБ, %', className: 'num', render: (row) => fmt.num(row.price_pct, 3) },
+        { title: 'Стоимость, ₽', className: 'num', render: (row) => fmt.num(row.value_rub, 2) },
+        { title: 'Коэффициент', className: 'num', render: (row) => fmt.num(row.haircut, 3) },
+        {
+          title: 'Механизм',
+          render: (row) => `<span class="badge">${fmt.esc(row.mechanism || '—')}</span>`,
+        },
+        { title: 'Погашение', render: (row) => fmt.date(row.maturity_date) },
+      ], data.items, { emptyMessage: 'Ничего не найдено' });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
   // Импорт портфеля книгой
   // ------------------------------------------------------------------
 
@@ -3280,7 +3512,13 @@
           <div id="drawer-chart"></div>
         </div>
         ${info.kind === 'bond' ? '<div><div class="section-title">Премия к рынку гособлигаций</div><div id="drawer-spread"></div></div>' : ''}
-        ${data.cashflows.length ? '<div><div class="section-title">График выплат (данные НРД)</div><div id="drawer-cashflows" class="table-wrap"></div></div>' : ''}`;
+        ${data.cashflows.length ? `
+          <div>
+            <div class="section-title">Выплаты и накопление НКД</div>
+            <div id="drawer-payments"></div>
+            <p class="card__note" style="border:none;padding:9px 0 0">Столбцы — выплаты, линия — накопленный купонный доход. НКД растёт внутри купонного периода и обнуляется в день выплаты: на эту величину покупатель доплачивает продавцу, и на неё же падает цена в день купона.</p>
+          </div>
+          <div><div class="section-title">График выплат (данные НРД)</div><div id="drawer-cashflows" class="table-wrap"></div></div>` : ''}`;
 
       state.drawerSecid = info.secid;
       renderIntraday(info.secid, state.intradayInterval);
@@ -3304,6 +3542,7 @@
       if (info.kind === 'bond') renderSpreadHistory(info.secid);
 
       if (data.cashflows.length) {
+        renderPaymentChart(info.secid);
         const upcoming = data.cashflows
           .filter((row) => new Date(row.action_date) >= new Date(Date.now() - 86400000))
           .slice(0, 24);
@@ -3316,6 +3555,64 @@
       }
     } catch (error) {
       failure(body, error);
+    }
+  }
+
+  /** Выплаты столбцами и «пила» НКД одной картинкой. */
+  async function renderPaymentChart(secid) {
+    const container = $('#drawer-payments');
+    if (!container) return;
+    loading(container);
+
+    try {
+      const data = await api.payments(secid);
+      if (!data.payments.length) {
+        container.innerHTML = '<div class="empty">График выплат не загружен</div>';
+        return;
+      }
+
+      const series = [];
+      if (data.accrual.length) {
+        series.push({
+          code: 'accrual',
+          title: 'НКД на бумагу',
+          kind: 'line',
+          unit: '₽',
+          digits: 2,
+          color: 'var(--accent)',
+          points: data.accrual.map((point) => ({
+            x: new Date(point.date).getTime(),
+            y: point.value,
+          })),
+        });
+      }
+      series.push({
+        code: 'payments',
+        title: 'Выплата',
+        kind: 'bar',
+        unit: '₽',
+        digits: 2,
+        points: data.payments.map((item) => ({
+          x: new Date(item.date).getTime(),
+          y: item.amount,
+        })),
+      });
+
+      charts.timeSeriesChart(container, series, {
+        height: 240,
+        emptyMessage: 'Нет данных о выплатах',
+      });
+
+      const totals = data.totals;
+      container.insertAdjacentHTML('beforeend', `
+        <div class="reval-total__grid" style="margin-top:9px">
+          <span>Ближайшая выплата</span>
+          <b>${totals.next_date ? `${fmt.date(totals.next_date)} · ${fmt.num(totals.next_amount, 2)} ₽` : '—'}</b>
+          <span>Осталось выплат</span><b>${fmt.int(totals.upcoming)}</b>
+          <span>Сумма впереди</span><b>${fmt.num(totals.upcoming_amount, 2)} ₽</b>
+        </div>`);
+    } catch (error) {
+      failure(container, error);
     }
   }
 
@@ -3720,6 +4017,7 @@
     bonds: renderBondsTab,
     portfolio: renderPortfolio,
     cash: renderCash,
+    ratios: renderRatios,
     imports: renderImports,
     signals: renderSignals,
     admin: renderAdmin,
@@ -3874,6 +4172,12 @@
     wireDropzone('#pimport-drop', '#pimport-file', '#pimport-pick', previewPortfolioFile);
     on('#import-apply', 'click', applyImport);
     on('#pimport-apply', 'click', applyPortfolioImport);
+    // Нормативы
+    on('#ratios-save', 'click', saveRatioInputs);
+    on('#sim-run', 'click', runSimulation);
+    on('#lombard-search', 'input', debounce(renderLombard));
+    on('#lombard-mechanism', 'change', renderLombard);
+
     on('#pimport-template', 'click', () => saveFile(api.downloadPortfolioTemplate()));
     on('#reval-download', 'click', () =>
       saveFile(api.downloadRevaluation(state.portfolioName, 'xlsx')));

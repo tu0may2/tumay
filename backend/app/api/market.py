@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_session
 from ..models import Bar, CorpAction, FxRate, Instrument, MacroRate, Quote
-from ..services import accrual, analytics, intraday, keyrate, series
+from ..services import accrual, analytics, collateral, intraday, keyrate, payments, series
 from ..services.tabular import to_csv, to_xlsx
 from ..sources.moex import BOARD_SPECS
 
@@ -158,6 +158,66 @@ def get_instrument(
             exchange_value=quote.accrued_interest if quote else None,
             settle_date=(quote.settle_date if quote else None),
         ) if instrument.kind == "bond" else None,
+    }
+
+
+@router.get("/instruments/{secid}/payments", summary="График выплат по выпуску")
+def get_payments(
+    secid: str,
+    quantity: float = Query(1.0, gt=0, description="На сколько бумаг считать"),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Купоны, амортизации и погашение плюс линия накопления НКД."""
+    instrument = session.execute(
+        select(Instrument).where(Instrument.secid == secid.upper()).limit(1)
+    ).scalar_one_or_none()
+    if instrument is None:
+        raise HTTPException(status_code=404, detail=f"Инструмент {secid} не найден")
+    return payments.payment_schedule(session, instrument, quantity=quantity)
+
+
+@router.get("/collateral", summary="Список обеспечения Банка России")
+def get_collateral(
+    search: str | None = Query(None, description="Код, ISIN или эмитент"),
+    mechanism: str | None = Query(None, description="ОМ или ДМ"),
+    limit: int = Query(200, ge=1, le=2000),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Бумаги, которые ЦБ принимает в залог, с поправочными коэффициентами."""
+    from ..models import CbrCollateral
+
+    statement = select(CbrCollateral).order_by(CbrCollateral.group_title, CbrCollateral.isin)
+    if mechanism:
+        statement = statement.where(CbrCollateral.mechanism == mechanism.upper())
+    if search:
+        needle = f"%{search.strip().lower()}%"
+        statement = statement.where(
+            func.lower(CbrCollateral.isin).like(needle)
+            | func.lower(CbrCollateral.issuer).like(needle)
+            | func.lower(CbrCollateral.reg_number).like(needle)
+        )
+
+    rows = list(session.execute(statement.limit(limit)).scalars())
+    return {
+        "as_of": collateral.as_of(session),
+        "total": session.execute(select(func.count(CbrCollateral.id))).scalar(),
+        "items": [
+            {
+                "isin": row.isin,
+                "reg_number": row.reg_number,
+                "issuer": row.issuer,
+                "price_pct": row.price_pct,
+                "value_rub": row.value_rub,
+                "haircut": row.haircut,
+                "mechanism": row.mechanism,
+                "mechanism_title": collateral.MECHANISM_TITLES.get(
+                    row.mechanism, row.mechanism
+                ),
+                "group": row.group_title,
+                "maturity_date": row.maturity_date,
+            }
+            for row in rows
+        ],
     }
 
 

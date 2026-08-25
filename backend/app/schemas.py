@@ -269,6 +269,28 @@ class PortfolioImportApply(BaseModel):
     replace_existing: bool = False
 
 
+class RatioInputSave(BaseModel):
+    """Балансовые составляющие нормативов ликвидности.
+
+    Все поля необязательны: часть данных может появиться позже, а норматив,
+    для которого чего-то не хватает, честнее показать нерассчитанным, чем
+    подставить ноль и получить мнимое нарушение.
+    """
+
+    as_of: date | None = None
+    ovm: float | None = Field(None, ge=0)
+    ovm_min: float | None = Field(None, ge=0)
+    ovt: float | None = Field(None, ge=0)
+    ovt_min: float | None = Field(None, ge=0)
+    lam_other: float | None = Field(None, ge=0)
+    lat_other: float | None = Field(None, ge=0)
+    krd: float | None = Field(None, ge=0)
+    capital: float | None = Field(None, ge=0)
+    od: float | None = Field(None, ge=0)
+    o_min: float | None = Field(None, ge=0)
+    comment: str | None = Field(None, max_length=500)
+
+
 class PortfolioAccounting(BaseModel):
     """Вид учёта портфеля."""
 
