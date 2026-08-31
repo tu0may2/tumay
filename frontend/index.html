@@ -37,12 +37,14 @@
   </header>
 
   <nav class="tabs" id="tabs">
-    <button class="tab tab--active" data-view="overview" type="button">Обзор рынка</button>
+    <button class="tab tab--active" data-view="calendar" type="button">Платёжный календарь</button>
+    <button class="tab" data-view="cash" type="button">Позиция</button>
+    <button class="tab" data-view="portfolio" type="button">Портфель</button>
+    <button class="tab" data-view="ratios" type="button">Нормативы</button>
+    <button class="tab" data-view="accounts" type="button">Счета</button>
+    <button class="tab" data-view="overview" type="button">Обзор рынка</button>
     <button class="tab" data-view="instruments" type="button">Инструменты</button>
     <button class="tab" data-view="bonds" type="button">Облигации</button>
-    <button class="tab" data-view="portfolio" type="button">Портфель</button>
-    <button class="tab" data-view="cash" type="button">Деньги</button>
-    <button class="tab" data-view="ratios" type="button">Нормативы</button>
     <button class="tab" data-view="imports" type="button">Импорт и сверка</button>
     <button class="tab" data-view="signals" type="button">Сигналы</button>
     <button class="tab" data-view="admin" type="button">Настройки</button>
@@ -51,7 +53,7 @@
 
   <main id="main">
     <!-- Обзор рынка -->
-    <section class="view view--active" id="view-overview">
+    <section class="view" id="view-overview">
       <div class="kpi-grid" id="kpi-grid"></div>
 
       <article class="card" id="card-curve">
@@ -534,11 +536,18 @@ SU26238RMFS4
       </div>
     </section>
 
-    <!-- Деньги -->
-    <section class="view" id="view-cash">
-      <div class="kpi-grid" id="cash-kpi"></div>
+    <!-- Платёжный календарь: подвкладки как в «Облигациях» -->
+    <section class="view" id="view-calendar">
+      <div class="toolbar toolbar--modes">
+        <div class="segmented" id="calendar-mode">
+          <button data-cmode="calendar" class="is-active" type="button">Календарь</button>
+          <button data-cmode="monthly" type="button">По месяцам</button>
+          <button data-cmode="history" type="button">Состоявшиеся</button>
+        </div>
+        <span class="card__hint" id="calendar-mode-hint">Ожидаемые движения денег с накопленным остатком</span>
+      </div>
 
-      <article class="card">
+      <article class="card calendar-pane" id="cpane-calendar">
         <header class="card__head">
           <h2>Платёжный календарь</h2>
           <div class="card__tools">
@@ -548,6 +557,8 @@ SU26238RMFS4
               <button data-days="365" type="button">Год</button>
             </div>
             <span class="card__hint" id="cash-gap-hint"></span>
+            <button class="btn btn--sm" id="calendar-xlsx" type="button">Выгрузить в Excel</button>
+            <button class="btn btn--sm" data-fullscreen="cpane-calendar" type="button" title="На весь экран">⛶</button>
           </div>
         </header>
         <div class="card__body" id="cash-calendar-chart"></div>
@@ -555,6 +566,39 @@ SU26238RMFS4
         <p class="card__note">Расчёты по сделкам, купоны и погашения из графика НРД, возвраты размещений и заведённые вручную движения. Остаток считается нарастающим итогом: строка, где он уходит в минус, — кассовый разрыв.</p>
       </article>
 
+      <article class="card calendar-pane" id="cpane-monthly" hidden>
+        <header class="card__head">
+          <h2>Приход и расход по месяцам</h2>
+          <div class="card__tools">
+            <span class="card__hint" id="monthly-hint"></span>
+            <button class="btn btn--sm" data-fullscreen="cpane-monthly" type="button" title="На весь экран">⛶</button>
+          </div>
+        </header>
+        <div class="card__body" id="calendar-monthly-chart"></div>
+        <div class="card__body table-wrap" id="calendar-monthly-table" style="max-height:340px"></div>
+        <p class="card__note">Тот же горизонт, свёрнутый по месяцам: видно, в каком месяце расход перекрывает приход, ещё до того как это превратится в кассовый разрыв по дням.</p>
+      </article>
+
+      <article class="card calendar-pane" id="cpane-history" hidden>
+        <header class="card__head">
+          <h2>Состоявшиеся движения</h2>
+          <div class="card__tools">
+            <span class="card__hint" id="history-flows-hint"></span>
+            <button class="btn btn--sm" data-fullscreen="cpane-history" type="button" title="На весь экран">⛶</button>
+          </div>
+        </header>
+        <div class="card__body table-wrap" id="calendar-history-table" style="max-height:520px"></div>
+        <p class="card__note">Расчёты, которые уже прошли. Сверять с выпиской банка удобнее здесь: плановые движения сюда не попадают.</p>
+      </article>
+    </section>
+
+    <!-- Позиция: сводный дашборд по деньгам -->
+    <section class="view" id="view-cash">
+<div class="kpi-grid" id="cash-kpi"></div>
+    </section>
+
+    <!-- Счета, движения и размещения -->
+    <section class="view" id="view-accounts">
       <div class="grid grid--2">
         <article class="card">
           <header class="card__head">

@@ -509,3 +509,28 @@ def test_events_report_cash_gap(session):
 
     events = extras_service.collect_events(session, portfolio="Основной")
     assert any(event["event"] == "cash_gap" for event in events)
+
+
+class TestCalendarExport:
+    """Выгрузка платёжного календаря в Excel."""
+
+    def test_columns_separate_plan_from_confirmed(self):
+        """Плановое движение и состоявшееся смешивать в отчёте нельзя.
+
+        По первому обязательство ещё можно отменить, по второму — нет, и в
+        файле это должно читаться словами: подсказку в Excel не наведёшь.
+        """
+        from app.services import cash as cash_service
+
+        rows = cash_service.calendar_rows_for_export([
+            {"flow_date": date(2026, 9, 1), "amount": 100.0, "is_planned": True},
+            {"flow_date": date(2026, 9, 2), "amount": -50.0, "is_planned": False},
+        ])
+        assert [row["planned_title"] for row in rows] == ["план", "подтверждено"]
+
+    def test_columns_cover_the_screen(self):
+        """Файл должен повторять то, что видно на экране."""
+        from app.services import cash as cash_service
+
+        codes = {column["code"] for column in cash_service.CALENDAR_COLUMNS}
+        assert {"flow_date", "kind_title", "comment", "amount", "balance_after"} <= codes

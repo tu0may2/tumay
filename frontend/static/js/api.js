@@ -175,6 +175,10 @@
     cashPosition: (portfolio) => request('/api/cash/position', { params: { portfolio } }),
     cashCalendar: (portfolio, horizonDays) =>
       request('/api/cash/calendar', { params: { portfolio, horizon_days: horizonDays } }),
+    downloadCalendar: (portfolio, horizonDays, fmt = 'xlsx') =>
+      download('/api/cash/calendar/download', {
+        params: { portfolio, horizon_days: horizonDays, fmt },
+      }),
     cashHistory: (portfolio, days) =>
       request('/api/cash/history', { params: { portfolio, days } }),
     cashAccounts: (portfolio) => request('/api/cash/accounts', { params: { portfolio } }),

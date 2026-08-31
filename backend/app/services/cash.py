@@ -390,6 +390,35 @@ def cash_position(
 # ----------------------------------------------------------------------
 # Платёжный календарь
 # ----------------------------------------------------------------------
+#: Колонки выгрузки платёжного календаря в Excel
+CALENDAR_COLUMNS: tuple[dict[str, Any], ...] = (
+    {"code": "flow_date", "title": "Дата", "kind": "date"},
+    {"code": "days_left", "title": "Через дней", "kind": "number", "digits": 0},
+    {"code": "kind_title", "title": "Вид", "kind": "text"},
+    {"code": "comment", "title": "Основание", "kind": "text"},
+    {"code": "currency", "title": "Валюта", "kind": "text"},
+    {"code": "amount", "title": "Сумма, ₽", "kind": "number", "digits": 2},
+    {"code": "balance_after", "title": "Остаток после, ₽", "kind": "number", "digits": 2},
+    {"code": "planned_title", "title": "Статус", "kind": "text"},
+)
+
+
+def calendar_rows_for_export(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Дополнить строки текстом: в Excel подсказку не наведёшь.
+
+    Плановые движения и уже состоявшиеся считаются вместе, но смешивать их
+    в отчёте нельзя: по первым обязательство ещё можно отменить, по вторым —
+    нет. Поэтому признак выносится отдельной колонкой словами.
+    """
+    return [
+        {
+            **event,
+            "planned_title": "план" if event.get("is_planned") else "подтверждено",
+        }
+        for event in events
+    ]
+
+
 def payment_calendar(
     session: Session,
     *,

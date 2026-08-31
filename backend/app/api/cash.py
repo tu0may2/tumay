@@ -1,9 +1,12 @@
 """Денежная позиция: счета, движения, размещения, платёжный календарь."""
 from __future__ import annotations
 
-from typing import Any
+from datetime import date
+from typing import Any, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,6 +21,7 @@ from ..schemas import (
     PlacementRead,
 )
 from ..services import cash as cash_service
+from ..services.tabular import to_csv, to_xlsx
 from ..services.auth import audit, require_trader, require_viewer
 
 router = APIRouter(prefix="/api/cash", tags=["Деньги"])
@@ -43,6 +47,60 @@ def calendar(
     """Ожидаемые движения денег с накопленным остатком и кассовым разрывом."""
     return cash_service.payment_calendar(
         session, portfolio=portfolio, horizon_days=horizon_days
+    )
+
+
+@router.get("/calendar/download", summary="Выгрузить платёжный календарь")
+def download_calendar(
+    portfolio: str | None = Query(None),
+    horizon_days: int = Query(180, ge=1, le=1095),
+    fmt: Literal["xlsx", "csv"] = Query("xlsx"),
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_viewer),
+) -> Response:
+    """Тот же календарь, что на экране, но файлом для Excel."""
+    result = cash_service.payment_calendar(
+        session, portfolio=portfolio, horizon_days=horizon_days
+    )
+    if not result["events"]:
+        raise HTTPException(
+            status_code=404, detail="На этом горизонте движений не запланировано"
+        )
+
+    columns = list(cash_service.CALENDAR_COLUMNS)
+    rows = cash_service.calendar_rows_for_export(result["events"])
+    stem = f"Платёжный календарь {date.today():%d.%m.%Y}"
+
+    if fmt == "csv":
+        content = to_csv(columns, rows)
+        media_type = "text/csv; charset=utf-8"
+        filename = f"{stem}.csv"
+    else:
+        money = lambda value: f"{value:,.2f}".replace(",", " ")  # noqa: E731
+        content = to_xlsx(
+            columns,
+            rows,
+            sheet_title="Календарь",
+            meta=[
+                ("Портфель", portfolio or "все"),
+                ("Горизонт, дней", str(horizon_days)),
+                ("Остаток на начало, ₽", money(result["opening_balance"])),
+                ("Остаток на конец, ₽", money(result["closing_balance"])),
+                ("Минимальный остаток, ₽", money(result["lowest_balance"])),
+                (
+                    "Кассовый разрыв",
+                    f"{result['gap_date']:%d.%m.%Y}" if result["gap_date"] else "нет",
+                ),
+                ("Сформировано", date.today().strftime("%d.%m.%Y")),
+            ],
+        )
+        media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        filename = f"{stem}.xlsx"
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
 
 

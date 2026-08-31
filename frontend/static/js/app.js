@@ -3,7 +3,7 @@
   'use strict';
 
   const state = {
-    view: 'overview',
+    view: 'calendar',
     loaded: {},
     portfolioName: null,
     exportMode: 'by_date',
@@ -26,6 +26,9 @@
     buyRows: [],
     portfolios: [],
     cashHorizon: 180,
+    // Активная подвкладка платёжного календаря
+    calendarMode: 'calendar',
+    calendarData: null,
     historyDays: 365,
     accounts: [],
     importDeals: [],
@@ -486,7 +489,6 @@
       return charts.empty(container, 'Кривая не загружена');
     }
     $('#curve-date').textContent = `на ${fmt.date(curve.curve_date)}`;
-    bindStaticFullscreen();
 
     charts.lineChart(
       container,
@@ -2232,12 +2234,13 @@
     loading(kpi);
 
     try {
-      const [position, calendar, accounts, placements, flows] = await Promise.all([
+      // Таблицы переехали на свои вкладки, но календарь дашборду нужен:
+      // минимальный остаток и дата кассового разрыва — его метрики, и
+      // ради них он и открывается первым делом
+      const [position, accounts, calendar] = await Promise.all([
         api.cashPosition(state.portfolioName),
-        api.cashCalendar(state.portfolioName, state.cashHorizon),
         api.cashAccounts(state.portfolioName),
-        api.placements(state.portfolioName),
-        api.cashFlows({ limit: 40 }),
+        api.cashCalendar(state.portfolioName, state.cashHorizon),
       ]);
 
       state.accounts = accounts;
@@ -2289,6 +2292,46 @@
           </div>`)
         .join('');
 
+    } catch (error) {
+      failure(kpi, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Платёжный календарь
+  // ------------------------------------------------------------------
+
+  /** Переключение подвкладок календаря. */
+  function switchCalendarMode(mode) {
+    state.calendarMode = mode;
+    $$('#calendar-mode button').forEach((button) =>
+      button.classList.toggle('is-active', button.dataset.cmode === mode)
+    );
+    $$('.calendar-pane').forEach((pane) => {
+      pane.hidden = pane.id !== `cpane-${mode}`;
+    });
+    $('#calendar-mode-hint').textContent = CALENDAR_HINTS[mode] || '';
+    renderCalendar();
+  }
+
+  const CALENDAR_HINTS = {
+    calendar: 'Ожидаемые движения денег с накопленным остатком',
+    monthly: 'Тот же горизонт, свёрнутый по месяцам',
+    history: 'Расчёты, которые уже прошли',
+  };
+
+  async function renderCalendar() {
+    const mode = state.calendarMode || 'calendar';
+    if (mode === 'history') return renderCalendarHistory();
+
+    const container = $('#cash-calendar-table');
+    loading(mode === 'monthly' ? $('#calendar-monthly-table') : container);
+
+    try {
+      const calendar = await api.cashCalendar(state.portfolioName, state.cashHorizon);
+      state.calendarData = calendar;
+      if (mode === 'monthly') return renderCalendarMonthly(calendar);
+
       const gapHint = $('#cash-gap-hint');
       if (gapHint) {
         gapHint.innerHTML = calendar.has_gap
@@ -2335,6 +2378,96 @@
         },
       ], calendar.events, { emptyMessage: 'Движений в этом горизонте нет' });
 
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  /** Свод по месяцам: где расход перекрывает приход. */
+  function renderCalendarMonthly(calendar) {
+    const rows = calendar.by_month || [];
+    $('#monthly-hint').textContent = rows.length
+      ? `${rows.length} ${fmt.plural(rows.length, 'месяц', 'месяца', 'месяцев')}`
+      : '';
+
+    charts.barChart(
+      $('#calendar-monthly-chart'),
+      rows.map((row) => ({
+        x: row.month,
+        y: row.inflow + row.outflow,
+        label: `${row.month}: ${fmt.rub(row.inflow + row.outflow)}`,
+      })),
+      {
+        height: 200,
+        colorBySign: true,
+        yFormat: (v) => fmt.money(v),
+        xFormat: (v) => String(v),
+        emptyMessage: 'Движений в этом горизонте нет',
+      }
+    );
+
+    renderTable($('#calendar-monthly-table'), [
+      { title: 'Месяц', render: (row) => fmt.esc(row.month) },
+      {
+        title: 'Приход', className: 'num',
+        render: (row) => `<span class="up">${fmt.rub(row.inflow)}</span>`,
+      },
+      {
+        title: 'Расход', className: 'num',
+        render: (row) => `<span class="down">${fmt.rub(row.outflow)}</span>`,
+      },
+      {
+        title: 'Итого за месяц', className: 'num',
+        render: (row) => {
+          const net = row.inflow + row.outflow;
+          return `<b class="${fmt.trendClass(net)}">${fmt.rub(net)}</b>`;
+        },
+      },
+    ], rows, { emptyMessage: 'Движений в этом горизонте нет' });
+  }
+
+  /** Состоявшиеся расчёты: с ними сверяют выписку банка. */
+  async function renderCalendarHistory() {
+    const container = $('#calendar-history-table');
+    loading(container);
+    try {
+      const rows = await api.cashHistory(state.portfolioName, 90);
+      $('#history-flows-hint').textContent = `${rows.length} ${fmt.plural(rows.length, 'запись', 'записи', 'записей')} за 90 дней`;
+
+      renderTable(container, [
+        { title: 'Дата', render: (row) => fmt.date(row.flow_date) },
+        {
+          title: 'Вид',
+          render: (row) => `<span class="badge">${fmt.esc(row.kind_title || row.kind)}</span>`,
+        },
+        { title: 'Основание', render: (row) => fmt.esc(row.comment || '—') },
+        {
+          title: 'Сумма', className: 'num',
+          render: (row) => `<span class="${fmt.trendClass(row.amount)}">${fmt.rub(row.amount)}</span>`,
+        },
+      ], rows, { emptyMessage: 'Состоявшихся движений за период нет' });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Счета, движения и размещения
+  // ------------------------------------------------------------------
+  async function renderAccounts() {
+    const container = $('#accounts-table');
+    loading(container);
+
+    try {
+      const [position, placements, flows] = await Promise.all([
+        api.cashPosition(state.portfolioName),
+        api.placements(state.portfolioName),
+        api.cashFlows({ limit: 40 }),
+      ]);
+
+      state.accounts = position.accounts;
+      fillAccountSelect(position.accounts);
+
       renderTable($('#accounts-table'), [
         { title: 'Счёт', render: (row) => fmt.esc(row.name) },
         { title: 'Банк', render: (row) => `<span class="dim">${fmt.esc(row.bank || '—')}</span>` },
@@ -2348,7 +2481,7 @@
         },
       ], position.accounts, { emptyMessage: 'Счетов пока нет' });
 
-      bindRemoval('#accounts-table', 'dropAccount', api.deleteAccount, renderCash, 'Счёт удалён');
+      bindRemoval('#accounts-table', 'dropAccount', api.deleteAccount, renderAccounts, 'Счёт удалён');
 
       renderTable($('#flows-table'), [
         { title: 'Дата', render: (row) => fmt.date(row.flow_date) },
@@ -2371,7 +2504,7 @@
         },
       ], flows, { emptyMessage: 'Движений нет' });
 
-      bindRemoval('#flows-table', 'dropFlow', api.deleteFlow, renderCash, 'Движение удалено');
+      bindRemoval('#flows-table', 'dropFlow', api.deleteFlow, renderAccounts, 'Движение удалено');
 
       renderTable($('#placements-table'), [
         {
@@ -2404,9 +2537,9 @@
         },
       ], position.placements, { emptyMessage: 'Размещений нет' });
 
-      bindRemoval('#placements-table', 'dropPlacement', api.deletePlacement, renderCash, 'Размещение удалено');
+      bindRemoval('#placements-table', 'dropPlacement', api.deletePlacement, renderAccounts, 'Размещение удалено');
     } catch (error) {
-      failure(kpi, error);
+      failure(container, error);
     }
   }
 
@@ -4132,7 +4265,9 @@
     instruments: renderInstruments,
     bonds: renderBondsTab,
     portfolio: renderPortfolio,
+    calendar: renderCalendar,
     cash: renderCash,
+    accounts: renderAccounts,
     ratios: renderRatios,
     imports: renderImports,
     signals: renderSignals,
@@ -4261,16 +4396,22 @@
       }
     });
 
-    // Деньги
+    // Платёжный календарь: подвкладки, горизонт и выгрузка
+    $$('#calendar-mode button').forEach((button) => {
+      button.addEventListener('click', () => switchCalendarMode(button.dataset.cmode));
+    });
     $$('#cash-horizon button').forEach((button) => {
       button.addEventListener('click', () => {
         state.cashHorizon = Number(button.dataset.days);
         $$('#cash-horizon button').forEach((other) =>
           other.classList.toggle('is-active', other === button)
         );
-        renderCash();
+        renderCalendar();
       });
     });
+    on('#calendar-xlsx', 'click', () => saveFile(
+      api.downloadCalendar(state.portfolioName, state.cashHorizon, 'xlsx')
+    ));
     on('#account-add', 'click', () => {
       const form = $('#account-form');
       form.hidden = !form.hidden;
@@ -4417,7 +4558,12 @@
       showLogin(true);
     };
 
-    switchView('overview');
+    // Кнопки «на весь экран» есть в разметке с самого начала. Раньше их
+    // привязывала отрисовка кривой доходности — то есть на вкладках, куда
+    // кривая не заходит, кнопка молча не работала
+    bindStaticFullscreen();
+
+    switchView('calendar');
 
     // Проверка доступа и список портфелей — после первой отрисовки, чтобы
     // интерфейс появлялся сразу, а не ждал ответа сервера
