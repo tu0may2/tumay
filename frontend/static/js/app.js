@@ -18,6 +18,10 @@
     screens: [],
     limitKinds: [],
     picked: { instruments: {}, analysis: {} },
+    // За какими бумагами следим: множество кодов и их идентификаторы в
+    // списке наблюдения — по ним рисуются флаги и снимается пометка
+    watched: new Set(),
+    watchIds: {},
     rows: { instruments: {}, analysis: {} },
     buyRows: [],
     portfolios: [],
@@ -169,6 +173,73 @@
       render: (row) =>
         `<button class="btn btn--ghost" data-buy-one="${fmt.esc(row.secid)}" title="Добавить в портфель">+</button>`,
     };
+  }
+
+  /**
+   * Колонка-флаг: пометить бумагу и следить за ней отдельно.
+   *
+   * Состояние держим в ``state.watched`` — множестве кодов. Иначе после
+   * каждого нажатия пришлось бы перезапрашивать всю витрину, чтобы флаг
+   * перерисовался, а витрина здесь самая дорогая страница.
+   */
+  function watchColumn() {
+    return {
+      title: '',
+      className: 'num',
+      render: (row) => {
+        const on = state.watched.has(row.secid);
+        return `<button class="btn btn--ghost watch-flag${on ? ' is-on' : ''}"
+          data-watch-toggle="${fmt.esc(row.secid)}"
+          title="${on ? 'Убрать из наблюдения' : 'Следить за бумагой'}">${on ? '★' : '☆'}</button>`;
+      },
+    };
+  }
+
+  /** Включить флаги наблюдения в отрисованной таблице. */
+  function wireWatchFlags(container) {
+    container.querySelectorAll('[data-watch-toggle]').forEach((button) => {
+      button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        const secid = button.dataset.watchToggle;
+        button.disabled = true;
+        try {
+          if (state.watched.has(secid)) {
+            const id = state.watchIds[secid];
+            if (id) await api.removeWatch(id);
+            state.watched.delete(secid);
+            delete state.watchIds[secid];
+            toast(`${secid} убрана из наблюдения`);
+          } else {
+            const created = await api.addWatch({ secid });
+            state.watched.add(secid);
+            if (created && created.id) state.watchIds[secid] = created.id;
+            toast(`${secid} в наблюдении`);
+          }
+          const on = state.watched.has(secid);
+          button.classList.toggle('is-on', on);
+          button.textContent = on ? '★' : '☆';
+          button.title = on ? 'Убрать из наблюдения' : 'Следить за бумагой';
+          // Вкладка сигналов покажет обновлённый список при следующем открытии
+          state.loaded.signals = false;
+        } catch (error) {
+          toast(error.message, true);
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+  }
+
+  /** Подтянуть, за какими бумагами уже следим: флаги рисуются по этому списку. */
+  async function loadWatched() {
+    try {
+      const items = await api.watchlist();
+      state.watched = new Set(items.map((item) => item.secid));
+      state.watchIds = {};
+      items.forEach((item) => { state.watchIds[item.secid] = item.id; });
+    } catch (error) {
+      // Наблюдение не критично для витрины — молча оставляем пустым
+    }
   }
 
   /** Запомнить строки витрины, чтобы окно знало цену и НКД по коду. */
@@ -743,7 +814,9 @@
   async function renderInstruments() {
     const container = $('#instruments-table');
     loading(container);
-    await refreshInstrumentSecurityTypes();
+    // Флаги наблюдения рисуются по этому списку — он должен быть готов
+    // до отрисовки, иначе помеченные бумаги покажутся непомеченными
+    await Promise.all([refreshInstrumentSecurityTypes(), loadWatched()]);
 
     const kind = $('#f-kind').value;
     const securityType = $('#f-security-type').value;
@@ -775,6 +848,7 @@
         { title: 'Сделок', className: 'num', render: (row) => fmt.int(row.num_trades) },
         { title: 'Спред', className: 'num', render: (row) => fmt.pct(row.spread_pct, 3) },
         { title: 'Ликвидность', className: 'num', render: (row) => liquidityCell(row.liquidity_score) },
+        watchColumn(),
         buyColumn('instruments'),
       ], data.items, {
         rowKey: (row) => row.secid,
@@ -782,6 +856,7 @@
         emptyMessage: 'Ничего не найдено — ослабьте фильтры',
       });
       wirePicking(container, 'instruments');
+      wireWatchFlags(container);
     } catch (error) {
       failure(container, error);
     }
@@ -812,7 +887,6 @@
       maturity_to: pick('#a-matto'),
       min_turnover: (num('#a-turnover') || 0) * 1e6,
       max_risk_score: num('#a-risk'),
-      has_offer: bool('#a-offer'),
       has_amortization: bool('#a-amort'),
       // Сортировка идёт на сервере: он видит весь рынок, а на экране
       // только первые триста строк — иначе «сверху» оказалось бы не то
@@ -820,6 +894,20 @@
       order: state.analysisSort.order,
       limit: 300,
     };
+    // Оферта: «есть/нет» и «в ближайшие N дней» — разные вопросы к серверу.
+    // Второй заодно сам сортирует список по дате оферты: смотреть ближайшие
+    // оферты в порядке доходности бессмысленно, важно, что раньше наступит
+    const offer = $('#a-offer').value;
+    if (offer === 'true' || offer === 'false') {
+      params.has_offer = offer;
+    } else if (offer.startsWith('d')) {
+      params.offer_within_days = Number(offer.slice(1));
+      if (!state.analysisSort.by) {
+        params.sort_by = 'years_to_offer';
+        params.order = 'asc';
+      }
+    }
+
     const coupon = pick('#a-coupon');
     if (coupon) params.coupon_type = [coupon];
     const benchmark = pick('#a-benchmark');
@@ -843,6 +931,7 @@
   async function renderAnalysis() {
     const container = $('#analysis-table');
     loading(container);
+    await loadWatched();
 
     try {
       if (!state.bondFiltersLoaded) {
@@ -855,14 +944,26 @@
           option.textContent = code;
           select.appendChild(option);
         });
-        // Базы купона — только встретившиеся в данных
+        // Базы купона — только встретившиеся в данных, с числом выпусков:
+        // без него непонятно, стоит ли за пунктом весь рынок флоатеров или
+        // единственная бумага
         const benchmarks = $('#a-benchmark');
         (options.benchmarks || []).forEach((item) => {
           const option = document.createElement('option');
           option.value = item.code;
-          option.textContent = item.title;
+          option.textContent = `${item.title} (${fmt.int(item.count)})`;
           benchmarks.appendChild(option);
         });
+        // Карточки выпусков добираются порциями. Пока шаг сбора не прошёл по
+        // всему рынку, часть флоатеров ещё без привязки — молчать об этом
+        // нельзя: иначе отбор по базе выглядит неполным без объяснения
+        const pending = options.benchmarks_unchecked || 0;
+        const hint = $('#a-benchmark-hint');
+        if (hint) {
+          hint.textContent = pending
+            ? `ещё не размечено выпусков: ${fmt.int(pending)}`
+            : '';
+        }
         // Виды выпусков — тоже только встретившиеся среди облигаций
         const securityTypes = $('#a-security-type');
         (options.security_types || []).forEach((item) => {
@@ -937,7 +1038,9 @@
           },
         },
         { title: 'Аморт.', render: (row) => (row.has_amortization ? '<span class="badge badge--accent">да</span>' : '<span class="dim">нет</span>') },
-        { title: 'Оферта', render: (row) => (row.has_offer ? `<span class="badge badge--warn">${row.offer_date ? fmt.date(row.offer_date) : 'есть'}</span>` : '<span class="dim">нет</span>') },
+        // Сортировка по сроку до оферты, а не по самой дате: у бумаг без
+        // оферты даты нет, и такие строки уходят вниз, а не смешиваются
+        { title: 'Оферта', sortBy: 'years_to_offer', render: (row) => (row.has_offer ? `<span class="badge badge--warn">${row.offer_date ? fmt.date(row.offer_date) : 'есть'}</span>` : '<span class="dim">нет</span>') },
         { title: 'Оборот, ₽', className: 'num', render: (row) => fmt.money(row.turnover) },
         { title: 'Ликв.', className: 'num', sortBy: 'liquidity_score', render: (row) => liquidityCell(row.liquidity_score) },
         { title: 'Ур.', className: 'num', render: (row) => `<span class="badge">${row.list_level || '—'}</span>` },
@@ -950,6 +1053,7 @@
             return `<span class="badge ${cls}" title="${fmt.esc(hint)}">${fmt.num(row.risk_score, 0)} · ${fmt.esc(row.risk_band || '')}</span>`;
           },
         },
+        watchColumn(),
         buyColumn('analysis'),
       ], data.items, {
         rowKey: (row) => row.secid,
@@ -965,6 +1069,7 @@
         },
       });
       wirePicking(container, 'analysis');
+      wireWatchFlags(container);
 
       renderMarketMap(data.items);
     } catch (error) {
@@ -2748,7 +2853,14 @@
           render: (row) => `<span class="badge">${fmt.esc(row.mechanism || '—')}</span>`,
         },
         { title: 'Погашение', render: (row) => fmt.date(row.maturity_date) },
-      ], data.items, { emptyMessage: 'Ничего не найдено' });
+      ], data.items, {
+        // Ключом берём код бумаги: по нему открывается карточка. Список ЦБ
+        // шире того, что торгуется на наших площадках, поэтому у части строк
+        // своей бумаги в справочнике нет — такие строки не кликаются
+        rowKey: (row) => row.secid || '',
+        onRowClick: openInstrument,
+        emptyMessage: 'Ничего не найдено',
+      });
     } catch (error) {
       failure(container, error);
     }
@@ -4084,9 +4196,12 @@
 
     const today = new Date();
     const isoToday = today.toISOString().slice(0, 10);
-    const monthAgo = new Date(today.getTime() - 30 * 86400000).toISOString().slice(0, 10);
+    // Выгрузку по списку бумаг почти всегда делают за вчера и сегодня:
+    // сверить вчерашнюю средневзвешенную цену с текущей. Месяц по умолчанию
+    // означал лишние тысячи строк, которые тут же выбрасывали
+    const yesterday = new Date(today.getTime() - 86400000).toISOString().slice(0, 10);
     const inMonth = new Date(today.getTime() + 30 * 86400000).toISOString().slice(0, 10);
-    [['#d-date', isoToday], ['#e-from', monthAgo], ['#e-to', isoToday],
+    [['#d-date', isoToday], ['#e-from', yesterday], ['#e-to', isoToday],
      ['#fl-date', isoToday], ['#pl-start', isoToday], ['#pl-end', inMonth]].forEach(
       ([selector, value]) => { const node = $(selector); if (node) node.value = value; }
     );

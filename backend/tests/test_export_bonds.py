@@ -90,7 +90,7 @@ class TestBuildTable:
 
     def test_summary_aggregates(self):
         rows = export_service.build_rows(
-            self.ITEM, self.BARS, ["wa_price", "volume", "accrued_interest"], "summary"
+            self.ITEM, self.BARS, ["wa_price", "volume"], "summary"
         )
         assert len(rows) == 1
         row = rows[0]
@@ -99,9 +99,8 @@ class TestBuildTable:
         assert row["wa_price_avg"] == pytest.approx(84.5)
         assert row["wa_price_min"] == pytest.approx(84.0)
         assert row["wa_price_max"] == pytest.approx(85.0)
-        # Объём суммируется, НКД берётся на конец периода
+        # Объём суммируется за период
         assert row["volume"] == pytest.approx(300.0)
-        assert row["accrued_interest"] == pytest.approx(1148.0)
 
     def test_summary_of_empty_history(self):
         assert export_service.build_rows(self.ITEM, [], ["wa_price"], "summary") == []
@@ -115,13 +114,13 @@ class TestBuildTable:
         """
         period = [date(2026, 8, 3), date(2026, 8, 4), date(2026, 8, 5)]
         accrual = {
-            date(2026, 8, 3): {"accrued_today": 1133.0, "accrued_settlement": 1148.0},
-            date(2026, 8, 4): {"accrued_today": 1148.0, "accrued_settlement": 1163.0},
-            date(2026, 8, 5): {"accrued_today": 1163.0, "accrued_settlement": 1178.0},
+            date(2026, 8, 3): {"accrued_settlement": 1148.0},
+            date(2026, 8, 4): {"accrued_settlement": 1163.0},
+            date(2026, 8, 5): {"accrued_settlement": 1178.0},
         }
         rows = export_service.build_rows(
             self.ITEM, self.BARS,
-            ["wa_price", "accrued_interest", "accrued_today", "accrued_settlement"],
+            ["wa_price", "accrued_settlement"],
             "by_date", accrual, dates=period,
         )
 
@@ -131,8 +130,6 @@ class TestBuildTable:
         assert last["trade_date"] == date(2026, 8, 5)
         assert last["no_trades"] is True
         assert last["wa_price"] is None
-        assert last["accrued_interest"] is None
-        assert last["accrued_today"] == 1163.0
         assert last["accrued_settlement"] == 1178.0
         # В дни с торгами рыночные колонки заполнены
         assert rows[0]["no_trades"] is False
@@ -142,41 +139,38 @@ class TestBuildTable:
         """Одно и то же число во всех строках было бы неправдой."""
         period = [date(2026, 8, 3), date(2026, 8, 4)]
         accrual = {
-            date(2026, 8, 3): {"accrued_today": 1133.0},
-            date(2026, 8, 4): {"accrued_today": 1148.0},
+            date(2026, 8, 3): {"accrued_settlement": 1133.0},
+            date(2026, 8, 4): {"accrued_settlement": 1148.0},
         }
         rows = export_service.build_rows(
-            self.ITEM, self.BARS, ["accrued_today"], "by_date", accrual, dates=period
+            self.ITEM, self.BARS, ["accrued_settlement"], "by_date", accrual, dates=period
         )
-        assert [row["accrued_today"] for row in rows] == [1133.0, 1148.0]
+        assert [row["accrued_settlement"] for row in rows] == [1133.0, 1148.0]
 
     def test_summary_takes_accrued_on_last_day(self):
         """В своде расчётный НКД берётся на конец периода."""
         accrual = {
-            date(2026, 8, 3): {"accrued_today": 1133.0},
-            date(2026, 8, 4): {"accrued_today": 1148.0},
+            date(2026, 8, 3): {"accrued_settlement": 1133.0},
+            date(2026, 8, 4): {"accrued_settlement": 1148.0},
         }
         rows = export_service.build_rows(
-            self.ITEM, self.BARS, ["accrued_today"], "summary", accrual
+            self.ITEM, self.BARS, ["accrued_settlement"], "summary", accrual
         )
-        assert rows[0]["accrued_today"] == 1148.0
+        assert rows[0]["accrued_settlement"] == 1148.0
 
     def test_accrued_without_data_is_empty(self):
         """Если купоны неизвестны, честнее пусто, чем ноль."""
         rows = export_service.build_rows(
-            self.ITEM, self.BARS, ["accrued_today"], "by_date", {},
+            self.ITEM, self.BARS, ["accrued_settlement"], "by_date", {},
             dates=[date(2026, 8, 3)],
         )
-        assert rows[0]["accrued_today"] is None
+        assert rows[0]["accrued_settlement"] is None
 
     def test_accrued_column_has_no_aggregation_suffix(self):
         """В своде подпись «на конец» была бы неправдой."""
-        columns = export_service.build_columns(
-            ["accrued_interest", "accrued_today"], "summary"
-        )
+        columns = export_service.build_columns(["accrued_settlement"], "summary")
         titles = {column["code"]: column["title"] for column in columns}
-        assert titles["accrued_today"] == "НКД на дату"
-        assert titles["accrued_interest"].startswith("НКД на дату торгов,")
+        assert titles["accrued_settlement"] == "НКД на дату расчётов"
 
     def test_settlement_skips_weekend(self):
         """Расчёты по пятничной сделке проходят в понедельник, не в субботу."""
@@ -190,14 +184,19 @@ class TestBuildTable:
         # Порядок дат перепутан — период всё равно должен получиться
         assert export_service.date_range(date(2026, 8, 6), date(2026, 8, 3)) == days
 
-    def test_accrued_today_offered_in_catalog(self):
+    def test_catalog_offers_one_accrued_column(self):
+        """Трёх похожих НКД в соседних столбцах быть не должно.
+
+        Прежде предлагались «на дату торгов», «на дату» и «на дату расчётов» —
+        три близких числа, которые путали больше, чем помогали. Оставлен тот,
+        что относится к сделке: платит покупатель именно его.
+        """
         catalog = export_service.parameter_catalog()
         bonds = next(group for group in catalog if group["group"] == "Облигации")
-        codes = {item["code"] for item in bonds["items"]}
-        assert {"accrued_interest", "accrued_today"} <= codes
-        # Подсказка обязана объяснять, чем колонки отличаются
-        today = next(i for i in bonds["items"] if i["code"] == "accrued_today")
-        assert today["hint"]
+        accrued = [i for i in bonds["items"] if i["code"].startswith("accrued")]
+        assert [i["code"] for i in accrued] == ["accrued_settlement"]
+        # Подсказка обязана объяснять, к какой дате относится число
+        assert accrued[0]["hint"]
 
     def test_columns_match_mode(self):
         by_date = export_service.build_columns(["wa_price"], "by_date")
@@ -405,6 +404,52 @@ class TestAnalyse:
         # Купон 10% к цене 50% от номинала даёт текущую доходность 20%
         assert row["current_yield_pct"] == pytest.approx(20.0)
 
+    def _with_offer(self, session, secid, days_ahead):
+        """Выпуск с офертой через указанное число дней от сегодня."""
+        from datetime import timedelta
+
+        offer = date.today() + timedelta(days=days_ahead) if days_ahead is not None else None
+        instrument = self._bond(session, secid, offer_date=offer)
+        session.add(Quote(
+            instrument_id=instrument.id, ts=datetime(2026, 8, 10, 12, 0),
+            last=100.0, turnover=1e7, yield_pct=15.0, duration_days=365,
+        ))
+        session.flush()
+        return instrument
+
+    def test_offer_horizon_keeps_only_the_near_ones(self, session):
+        """Отбор «ближайшие 30 дней» — про оферты, до которых рукой подать."""
+        self._with_offer(session, "SOON", 20)
+        self._with_offer(session, "LATER", 200)
+        self._with_offer(session, "NEVER", None)
+
+        rows = bonds_service.analyse(session, offer_within_days=30)["items"]
+        assert [row["secid"] for row in rows] == ["SOON"]
+
+    def test_offer_horizon_includes_the_boundary_day(self, session):
+        """Оферта ровно через тридцать дней в «ближайшие 30» входит."""
+        self._with_offer(session, "EDGE", 30)
+        assert len(bonds_service.analyse(session, offer_within_days=30)["items"]) == 1
+
+    def test_past_offers_are_not_upcoming(self, session):
+        """Прошедшую оферту предъявить уже нельзя.
+
+        Дата остаётся в справочнике до следующего пересмотра, и без этой
+        проверки она всплывала бы в списке ближайших.
+        """
+        self._with_offer(session, "GONE", -10)
+        assert bonds_service.analyse(session, offer_within_days=90)["items"] == []
+
+    def test_offer_horizon_and_has_offer_are_different_questions(self, session):
+        """«Есть оферта» и «оферта скоро» не должны подменять друг друга."""
+        self._with_offer(session, "SOON", 15)
+        self._with_offer(session, "FAR", 400)
+
+        both = bonds_service.analyse(session, has_offer=True)["items"]
+        near = bonds_service.analyse(session, offer_within_days=90)["items"]
+        assert len(both) == 2
+        assert [row["secid"] for row in near] == ["SOON"]
+
     def test_export_rows_use_readable_flags(self, session):
         instrument = self._bond(session, "AMR", bond_type="Амортизируемые облигации")
         session.add(Quote(
@@ -419,7 +464,46 @@ class TestAnalyse:
 
 
 class TestAccrualSeries:
-    """НКД заполняется на каждый день периода, а не только на дни торгов."""
+    """НКД заполняется на каждый день периода, а не только на дни торгов.
+
+    Расчёт ходит в базу за параметрами выпуска, поэтому база своя: прежде
+    класс опирался на ту, что лежит рядом с проектом, и на пустой базе все
+    его проверки тихо превращались в сравнение пустых словарей.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _bond_in_db(self, monkeypatch, tmp_path):
+        from contextlib import contextmanager
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'accrual.db'}")
+        Base.metadata.create_all(engine)
+        factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+        with factory() as session:
+            # Флоатер без объявленной ставки периода: график купонов такой
+            # выпуск не закрывает, и НКД выходных восстанавливается по
+            # соседним биржевым значениям — ровно то, что проверяет класс
+            session.add(Instrument(
+                secid=self.ITEM.secid, board=self.ITEM.board, engine="stock",
+                market="bonds", kind="bond", isin=self.ITEM.isin,
+                short_name=self.ITEM.name, face_value=1000.0, face_unit="SUR",
+                currency="SUR", bond_type="Флоатер",
+            ))
+            session.commit()
+
+        @contextmanager
+        def scope():
+            session = factory()
+            try:
+                yield session
+                session.commit()
+            finally:
+                session.close()
+
+        monkeypatch.setattr("app.services.export.session_scope", scope)
 
     ITEM = Resolved(
         query="RU000A10C5F9", secid="RU000A10C5F9", isin="RU000A10C5F9",

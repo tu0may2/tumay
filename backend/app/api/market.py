@@ -198,12 +198,25 @@ def get_collateral(
         )
 
     rows = list(session.execute(statement.limit(limit)).scalars())
+
+    # Код бумаги нужен, чтобы по строке списка открывалась её карточка.
+    # Список ЦБ ведётся по ISIN и шире того, что торгуется на наших
+    # площадках, поэтому код находится не для каждой строки
+    secid_by_isin = dict(
+        session.execute(
+            select(Instrument.isin, Instrument.secid).where(
+                Instrument.isin.in_([row.isin for row in rows])
+            )
+        ).all()
+    )
+
     return {
         "as_of": collateral.as_of(session),
         "total": session.execute(select(func.count(CbrCollateral.id))).scalar(),
         "items": [
             {
                 "isin": row.isin,
+                "secid": secid_by_isin.get(row.isin),
                 "reg_number": row.reg_number,
                 "issuer": row.issuer,
                 "price_pct": row.price_pct,

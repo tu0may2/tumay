@@ -36,6 +36,9 @@ def _filters(
         None, description="Вид выпуска: ofz_bond, corporate_bond, subfederal_bond…"
     ),
     has_offer: bool | None = Query(None),
+    offer_within_days: int | None = Query(
+        None, ge=1, le=1825, description="Оферта в ближайшие N дней: 30, 60, 90"
+    ),
     has_amortization: bool | None = Query(None),
     max_risk_score: float | None = Query(None, ge=0, le=100),
     sort_by: str = Query("yield_pct"),
@@ -58,6 +61,7 @@ def _filters(
         "benchmarks": benchmark,
         "security_types": security_type,
         "has_offer": has_offer,
+        "offer_within_days": offer_within_days,
         "has_amortization": has_amortization,
         "max_risk_score": max_risk_score,
         "sort_by": sort_by,
@@ -124,7 +128,7 @@ def download_analysis(
 @router.get("/filters", summary="Справочники для фильтров")
 def filter_options(session: Session = Depends(get_session)) -> dict[str, Any]:
     """Значения, которые реально встречаются в загруженных данных."""
-    from sqlalchemy import select
+    from sqlalchemy import func, select
 
     from ..models import Instrument
 
@@ -140,14 +144,23 @@ def filter_options(session: Session = Depends(get_session)) -> dict[str, Any]:
     ).scalars()
 
     # Базы купона: показываем только те, что реально встретились в данных —
-    # список всех мыслимых кодов был бы длиннее и бесполезнее
-    benchmarks = session.execute(
-        select(Instrument.coupon_benchmark)
-        .where(
-            Instrument.kind == "bond", Instrument.coupon_benchmark.isnot(None)
+    # список всех мыслимых кодов был бы длиннее и бесполезнее. Рядом даём
+    # число выпусков: без него непонятно, стоит ли за пунктом весь рынок
+    # флоатеров или один выпуск, и не окажется ли таблица пустой
+    benchmark_counts = session.execute(
+        select(Instrument.coupon_benchmark, func.count(Instrument.id))
+        .where(Instrument.kind == "bond", Instrument.coupon_benchmark.isnot(None))
+        .group_by(Instrument.coupon_benchmark)
+    ).all()
+    # Сколько выпусков ещё не размечено: карточки добираются порциями, и
+    # пока шаг сбора не прошёл по всему рынку, часть флоатеров без привязки
+    unchecked = session.execute(
+        select(func.count(Instrument.id)).where(
+            Instrument.kind == "bond",
+            Instrument.coupon_benchmark.is_(None),
+            Instrument.benchmark_checked_at.is_(None),
         )
-        .distinct()
-    ).scalars()
+    ).scalar()
 
     from ..services.analytics import security_type_catalog
 
@@ -161,9 +174,20 @@ def filter_options(session: Session = Depends(get_session)) -> dict[str, Any]:
             for code, title in bonds_service.COUPON_TITLES.items()
         ],
         "benchmarks": [
-            {"code": code, "title": bonds_service.benchmark_title(code)}
-            for code in sorted({b for b in benchmarks if b})
+            {
+                "code": code,
+                "title": bonds_service.benchmark_title(code),
+                "count": count,
+            }
+            # По убыванию числа выпусков: ключевая ставка и RUONIA, за
+            # которыми стоит рынок, оказываются сверху, а единичные базы —
+            # внизу, где им и место
+            for code, count in sorted(
+                ((c, n) for c, n in benchmark_counts if c),
+                key=lambda item: (-item[1], item[0]),
+            )
         ],
+        "benchmarks_unchecked": unchecked,
         "security_types": security_types,
         "list_levels": [1, 2, 3],
     }

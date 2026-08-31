@@ -850,3 +850,12 @@ tr.row--quiet td { color: var(--text-mute); background: color-mix(in srgb, var(-
 
 .ratio-row__parts span { color: var(--text-mute); }
 .ratio-row__parts b { font-family: var(--mono); text-align: right; }
+
+/* Флаг наблюдения в витринах. Помеченная бумага должна быть видна с одного
+   взгляда среди трёхсот строк, поэтому цвет, а не только форма звезды */
+.watch-flag { font-size: 15px; line-height: 1; padding: 3px 7px; color: var(--text-mute); }
+.watch-flag:hover { color: var(--accent-strong); }
+.watch-flag.is-on { color: var(--warn); }
+
+/* Подпись под полем фильтра: сколько выпусков ещё не размечено */
+.field__hint { font-size: 10.5px; color: var(--text-mute); margin-top: 3px; }

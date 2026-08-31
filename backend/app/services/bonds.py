@@ -239,6 +239,7 @@ def analyse(
     benchmarks: Sequence[str] | None = None,
     security_types: Sequence[str] | None = None,
     has_offer: bool | None = None,
+    offer_within_days: int | None = None,
     has_amortization: bool | None = None,
     max_risk_score: float | None = None,
     sort_by: str = "yield_pct",
@@ -384,6 +385,15 @@ def analyse(
             return False
         if has_offer is not None and bool(row.get("has_offer")) is not has_offer:
             return False
+        if offer_within_days is not None:
+            # Ближайшие оферты. Прошедшие не годятся: предъявить бумагу уже
+            # нельзя, а дата в справочнике остаётся до следующего пересмотра
+            offer = row.get("offer_date")
+            if offer is None:
+                return False
+            days_left = (offer - today).days
+            if days_left < 0 or days_left > offer_within_days:
+                return False
         if has_amortization is not None and bool(row.get("has_amortization")) is not has_amortization:
             return False
         if max_risk_score is not None and (row.get("risk_score") or 0) > max_risk_score:
