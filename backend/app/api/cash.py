@@ -5,7 +5,16 @@ from datetime import date
 from typing import Any, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -17,10 +26,13 @@ from ..schemas import (
     CashAccountRead,
     CashFlowCreate,
     CashFlowRead,
+    LedgerImportApply,
     PlacementCreate,
     PlacementRead,
 )
+from ..services import calendar_matrix as matrix_service
 from ..services import cash as cash_service
+from ..services import ledger_import as ledger_service
 from ..services.tabular import to_csv, to_xlsx
 from ..services.auth import audit, require_trader, require_viewer
 
@@ -102,6 +114,149 @@ def download_calendar(
         media_type=media_type,
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
     )
+
+
+# ----------------------------------------------------------------------
+# Календарь-матрица и выгрузка по лицевым счетам
+# ----------------------------------------------------------------------
+#: Оборотная ведомость за день столько не весит; ограничение бережёт память
+MAX_LEDGER_BYTES = 12 * 1024 * 1024
+
+
+async def _read_upload(file: UploadFile) -> bytes:
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=422, detail="Файл пуст")
+    if len(content) > MAX_LEDGER_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Файл больше {MAX_LEDGER_BYTES // (1024 * 1024)} МБ",
+        )
+    return content
+
+
+@router.get("/matrix", summary="Платёжный календарь по статьям и дням")
+def calendar_matrix(
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    only_loaded: bool = Query(False, description="Только дни с загруженной выгрузкой"),
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_viewer),
+) -> dict[str, Any]:
+    """Статьи по строкам, дни по столбцам — как в рабочем файле казначейства."""
+    return matrix_service.matrix(
+        session, date_from=date_from, date_to=date_to, only_loaded=only_loaded
+    )
+
+
+@router.get("/matrix/download", summary="Выгрузить календарь по статьям")
+def download_matrix(
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    only_loaded: bool = Query(False),
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_viewer),
+) -> Response:
+    """Книга с двумя листами: сам календарь и выгрузка, из которой он сложен."""
+    result = matrix_service.matrix(
+        session, date_from=date_from, date_to=date_to, only_loaded=only_loaded
+    )
+    ledger = matrix_service.ledger_sheet(session, on_date=result["date_to"])
+    content = matrix_service.build_workbook(result, ledger)
+
+    filename = (
+        f"Платёжный календарь {result['date_from']:%d.%m.%Y}"
+        f"—{result['date_to']:%d.%m.%Y}.xlsx"
+    )
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+@router.get("/ledger/rules", summary="Правила разноски счетов по статьям")
+def ledger_rules(user: dict = Depends(require_viewer)) -> list[dict[str, Any]]:
+    """Классификатор лицевых счетов — по нему сверяют, куда попала сумма."""
+    return matrix_service.rules_table()
+
+
+@router.get("/ledger", summary="Лист «Счета»")
+def ledger(
+    on_date: date | None = Query(None),
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_viewer),
+) -> dict[str, Any]:
+    """Загруженная выгрузка на дату с проставленными статьями календаря."""
+    return matrix_service.ledger_sheet(session, on_date=on_date)
+
+
+@router.post("/ledger/preview", summary="Разобрать выгрузку по лицевым счетам")
+async def preview_ledger(
+    file: UploadFile = File(..., description="Оборотная ведомость: .xlsx или .csv"),
+    on_date: date | None = Form(None),
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> dict[str, Any]:
+    """Показать разноску до записи.
+
+    Предпросмотр обязателен: разноска идёт по номеру счёта, и увидеть, что
+    оборот ушёл не в ту статью, можно только глядя на сопоставление — после
+    записи он растворится в сумме строки календаря.
+    """
+    content = await _read_upload(file)
+    try:
+        return ledger_service.preview(
+            session, content, file.filename or "", on_date=on_date
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/ledger/apply", summary="Записать выгрузку в календарь")
+def apply_ledger(
+    payload: LedgerImportApply,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> dict[str, Any]:
+    """Записать разобранную выгрузку, заменив прежнюю за этот день."""
+    result = ledger_service.apply(
+        session, payload.model_dump(), source_file=payload.source_file
+    )
+    audit(
+        session,
+        user,
+        action="import",
+        entity="ledger",
+        detail=(
+            f"выгрузка на {result['load_date']:%d.%m.%Y}: "
+            f"счетов {result['written']}, заменено {result['removed']}"
+        ),
+    )
+    return result
+
+
+@router.delete(
+    "/ledger/{load_date}",
+    summary="Убрать выгрузку за день",
+    status_code=status.HTTP_200_OK,
+)
+def delete_ledger(
+    load_date: date,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> dict[str, Any]:
+    removed = ledger_service.drop(session, load_date)
+    if not removed:
+        raise HTTPException(status_code=404, detail="На эту дату выгрузки нет")
+    audit(
+        session,
+        user,
+        action="delete",
+        entity="ledger",
+        detail=f"выгрузка на {load_date:%d.%m.%Y}, строк {removed}",
+    )
+    return {"load_date": load_date, "removed": removed}
 
 
 @router.get("/history", summary="Состоявшиеся движения")

@@ -269,6 +269,19 @@ class PortfolioImportApply(BaseModel):
     replace_existing: bool = False
 
 
+class LedgerImportApply(BaseModel):
+    """Подтверждение загрузки выгрузки по лицевым счетам на дату.
+
+    Дата обязательна: именно она определяет, в какой день платёжного календаря
+    лягут обороты, и угадывать её на этом шаге уже поздно — в предпросмотре
+    человек её видел и мог поправить.
+    """
+
+    load_date: date
+    rows: list[dict] = Field(..., min_length=1, max_length=5000)
+    source_file: str | None = Field(None, max_length=255)
+
+
 class RatioInputSave(BaseModel):
     """Балансовые составляющие нормативов ликвидности.
 

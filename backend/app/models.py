@@ -552,6 +552,40 @@ class CashFlow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class LedgerRow(Base):
+    """Строка выгрузки по лицевым счетам на дату — сырьё платёжного календаря.
+
+    Храним выгрузку как есть, а статью календаря выводим при чтении по номеру
+    счёта. Так исправление правила разноски чинит сразу все загруженные дни,
+    не требуя перезагружать файлы: иначе ошибка в классификаторе навсегда
+    застывала бы в базе, и «поправить одну статью» означало бы поднимать все
+    старые выгрузки заново.
+    """
+
+    __tablename__ = "ledger_rows"
+    __table_args__ = (
+        UniqueConstraint("load_date", "account", name="uq_ledger_date_account"),
+        Index("ix_ledger_date", "load_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: Дата, на которую загружена выгрузка
+    load_date: Mapped[date] = mapped_column(Date, index=True)
+    #: Номер лицевого счёта, 20 знаков
+    account: Mapped[str] = mapped_column(String(32), index=True)
+    account_name: Mapped[str | None] = mapped_column(Text)
+    currency: Mapped[str] = mapped_column(String(8), default="RUB")
+
+    #: Входящий остаток: дебетовый положителен, кредитовый отрицателен
+    opening_balance: Mapped[float] = mapped_column(Float, default=0.0)
+    debit_turnover: Mapped[float] = mapped_column(Float, default=0.0)
+    credit_turnover: Mapped[float] = mapped_column(Float, default=0.0)
+    closing_balance: Mapped[float] = mapped_column(Float, default=0.0)
+
+    source_file: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class Placement(Base):
     """Размещение или привлечение денег: депозит, РЕПО, обратное РЕПО."""
 

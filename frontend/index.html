@@ -540,16 +540,65 @@ SU26238RMFS4
     <section class="view" id="view-calendar">
       <div class="toolbar toolbar--modes">
         <div class="segmented" id="calendar-mode">
-          <button data-cmode="calendar" class="is-active" type="button">Календарь</button>
+          <button data-cmode="matrix" class="is-active" type="button">Календарь</button>
+          <button data-cmode="ledger" type="button">Счета</button>
+          <button data-cmode="calendar" type="button">Движения</button>
           <button data-cmode="monthly" type="button">По месяцам</button>
           <button data-cmode="history" type="button">Состоявшиеся</button>
         </div>
-        <span class="card__hint" id="calendar-mode-hint">Ожидаемые движения денег с накопленным остатком</span>
+        <span class="card__hint" id="calendar-mode-hint">Статьи по строкам, дни по столбцам</span>
       </div>
 
-      <article class="card calendar-pane" id="cpane-calendar">
+      <!-- Календарь казначейства: статьи по строкам, дни по столбцам -->
+      <article class="card calendar-pane" id="cpane-matrix">
         <header class="card__head">
           <h2>Платёжный календарь</h2>
+          <div class="card__tools">
+            <label class="field field--inline">
+              <span>с</span>
+              <input type="date" id="matrix-from" />
+            </label>
+            <label class="field field--inline">
+              <span>по</span>
+              <input type="date" id="matrix-to" />
+            </label>
+            <label class="check" title="Скрыть дни, на которые выгрузка не загружена">
+              <input type="checkbox" id="matrix-only-loaded" />
+              <span>только загруженные</span>
+            </label>
+            <span class="card__hint" id="matrix-hint"></span>
+            <button class="btn btn--sm btn--primary" id="ledger-import" type="button">Импорт выгрузки</button>
+            <button class="btn btn--sm" id="calendar-xlsx" type="button">Выгрузить в Excel</button>
+            <button class="btn btn--sm" data-fullscreen="cpane-matrix" type="button" title="На весь экран">⛶</button>
+          </div>
+        </header>
+        <div class="card__body table-wrap matrix-wrap" id="matrix-table"></div>
+        <p class="card__note">Строки — статьи из рабочего файла казначейства, столбцы — дни. Суммы приходят из выгрузки по лицевым счетам: оборот по дебету становится платежом, по кредиту — поступлением. День без выгрузки остаётся пустым, а не нулевым.</p>
+      </article>
+
+      <!-- Лист «Счета»: из чего сложились суммы календаря -->
+      <article class="card calendar-pane" id="cpane-ledger" hidden>
+        <header class="card__head">
+          <h2>Счета</h2>
+          <div class="card__tools">
+            <label class="field field--inline">
+              <span>на дату</span>
+              <select id="ledger-date"></select>
+            </label>
+            <span class="card__hint" id="ledger-hint"></span>
+            <button class="btn btn--sm btn--primary" id="ledger-import-2" type="button">Импорт выгрузки</button>
+            <button class="btn btn--sm" id="ledger-rules" type="button">Правила разноски</button>
+            <button class="btn btn--sm btn--danger" id="ledger-drop" type="button">Удалить день</button>
+            <button class="btn btn--sm" data-fullscreen="cpane-ledger" type="button" title="На весь экран">⛶</button>
+          </div>
+        </header>
+        <div class="card__body table-wrap" id="ledger-table" style="max-height:520px"></div>
+        <p class="card__note">Загруженная оборотная ведомость на дату. Колонки «Статья» показывают, в какую строку календаря ушёл оборот: пустая статья означает, что счёт не описан в правилах разноски и в календарь не попал.</p>
+      </article>
+
+      <article class="card calendar-pane" id="cpane-calendar" hidden>
+        <header class="card__head">
+          <h2>Движения по бумагам и размещениям</h2>
           <div class="card__tools">
             <div class="segmented" id="cash-horizon">
               <button data-days="30" type="button">Месяц</button>
@@ -557,7 +606,7 @@ SU26238RMFS4
               <button data-days="365" type="button">Год</button>
             </div>
             <span class="card__hint" id="cash-gap-hint"></span>
-            <button class="btn btn--sm" id="calendar-xlsx" type="button">Выгрузить в Excel</button>
+            <button class="btn btn--sm" id="calendar-events-xlsx" type="button">Выгрузить в Excel</button>
             <button class="btn btn--sm" data-fullscreen="cpane-calendar" type="button" title="На весь экран">⛶</button>
           </div>
         </header>
@@ -1139,6 +1188,65 @@ SU26238RMFS4
           <button class="btn btn--primary" type="button" id="buy-submit">Добавить сделки</button>
         </div>
       </footer>
+    </div>
+  </div>
+
+  <!-- Импорт выгрузки по лицевым счетам в платёжный календарь -->
+  <div class="modal" id="ledger-modal" hidden>
+    <div class="modal__backdrop" data-ledger-close></div>
+    <div class="modal__box" role="dialog" aria-modal="true" aria-labelledby="ledger-title">
+      <header class="modal__head">
+        <div>
+          <h2 id="ledger-title">Импорт выгрузки по лицевым счетам</h2>
+          <p class="drawer__sub">Оборотная ведомость за день: лицевой счёт, входящий остаток, обороты по дебету и кредиту, исходящий остаток. Обороты лягут в календарь на выбранную дату.</p>
+        </div>
+        <button class="btn btn--ghost" type="button" data-ledger-close aria-label="Закрыть">✕</button>
+      </header>
+
+      <div class="modal__body">
+        <div class="filters" style="background:none;border:none;padding:0 0 14px">
+          <label class="field">
+            <span>Файл выгрузки</span>
+            <input type="file" id="ledger-file" accept=".xlsx,.xlsm,.csv,.txt">
+          </label>
+          <label class="field">
+            <span>Дата, на которую грузим</span>
+            <input type="date" id="ledger-on-date">
+          </label>
+        </div>
+
+        <div id="ledger-warnings"></div>
+        <div class="section-title">Куда лягут суммы</div>
+        <div class="table-wrap" id="ledger-articles" style="max-height:240px"></div>
+        <div class="section-title">Счета из файла</div>
+        <div class="table-wrap" id="ledger-preview" style="max-height:260px"></div>
+      </div>
+
+      <footer class="modal__foot">
+        <span class="card__hint" id="ledger-summary"></span>
+        <div class="card__tools">
+          <button class="btn" type="button" id="ledger-parse">Разобрать файл</button>
+          <button class="btn btn--primary" type="button" id="ledger-submit" disabled>Загрузить в календарь</button>
+        </div>
+      </footer>
+    </div>
+  </div>
+
+  <!-- Классификатор лицевых счетов -->
+  <div class="modal" id="rules-modal" hidden>
+    <div class="modal__backdrop" data-rules-close></div>
+    <div class="modal__box" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+      <header class="modal__head">
+        <div>
+          <h2 id="rules-title">Правила разноски счетов</h2>
+          <p class="drawer__sub">Счёт относится к статье по началу номера: чем длиннее совпавший префикс, тем важнее правило. Одна и та же группа счетов по дебету и по кредиту попадает в разные статьи.</p>
+        </div>
+        <button class="btn btn--ghost" type="button" data-rules-close aria-label="Закрыть">✕</button>
+      </header>
+      <div class="modal__body">
+        <div class="table-wrap" id="rules-table" style="max-height:480px"></div>
+        <p class="card__note">Отметка «уточнить» стоит там, где по номеру счёта нельзя однозначно определить статью — эти правила стоит сверить с казначейством.</p>
+      </div>
     </div>
   </div>
 

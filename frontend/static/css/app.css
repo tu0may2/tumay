@@ -303,6 +303,53 @@ th.sortable--active { color: var(--accent-strong); }
 th.sortable--active .sortable__mark { opacity: 1; }
 tbody tr.clickable { cursor: pointer; }
 
+/* ------------------------------------------------------------------ */
+/* Платёжный календарь: статьи слева, дни справа                       */
+/* ------------------------------------------------------------------ */
+/* Столбец статей закреплён: без него на третьем экране вправо уже не
+   видно, какую строку читаешь, и календарь становится бесполезен */
+.matrix-wrap { max-height: 620px; }
+.matrix { font-variant-numeric: tabular-nums; }
+.matrix th.matrix__side, .matrix td.matrix__side {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  text-align: left;
+  min-width: 260px;
+  max-width: 320px;
+  white-space: normal;
+  background: var(--bg-elev);
+}
+.matrix th.matrix__side { z-index: 3; background: var(--bg-elev-2); }
+.matrix td.matrix__day { font-family: var(--mono); font-size: 12px; }
+.matrix th.matrix__day { min-width: 96px; }
+.matrix th.matrix__day--weekend, .matrix td.matrix__day--weekend { background: var(--bg-sunken); }
+/* День без выгрузки: в нём нечего читать, и это надо видеть сразу */
+.matrix th.matrix__day--empty { color: var(--text-mute); font-weight: 400; }
+.matrix tr.matrix__section td {
+  background: var(--bg-sunken);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.matrix tr.matrix__total td { font-weight: 600; border-top: 1px solid var(--border); }
+.matrix tr.matrix__running td { font-weight: 600; background: var(--accent-soft); }
+.matrix tr.matrix__running td.matrix__side { background: var(--accent-soft); }
+.matrix tr.matrix__manual td.matrix__side { color: var(--text-mute); }
+.matrix__hint { display: block; font-size: 10.5px; color: var(--text-mute); text-transform: none; letter-spacing: 0; }
+
+.field--inline { flex-direction: row; align-items: center; gap: 7px; }
+.field--inline > span { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.field--inline input, .field--inline select { padding: 5px 8px; font-size: 12px; }
+
+/* Второй заголовок в окне импорта не должен слипаться с таблицей выше */
+.modal__body .section-title + .table-wrap { margin-bottom: 16px; }
+.modal__body .table-wrap + .section-title { margin-top: 4px; }
+
+.btn--danger { color: var(--down); }
+.btn--danger:hover { border-color: var(--down); color: var(--down); }
+
 .sec { display: flex; flex-direction: column; gap: 1px; text-align: left; }
 .sec__code { font-family: var(--mono); font-weight: 600; font-size: 12.5px; }
 .sec__name { font-size: 11px; color: var(--text-mute); max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
