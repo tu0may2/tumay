@@ -506,6 +506,132 @@ class TestMatrix:
 
 
 # ----------------------------------------------------------------------
+# Ввод сумм руками
+# ----------------------------------------------------------------------
+def put(session, code, amount, *, on_date=DAY):
+    return matrix_service.save_entry(
+        session, entry_date=on_date, row_code=code, amount=amount
+    )
+
+
+class TestManualEntry:
+    def test_typed_amount_shows_in_the_calendar(self, session):
+        put(session, "out_salary", 1_234_567)
+        assert first_day(matrix_service.matrix(session))["out_salary"] == 1_234_567
+
+    def test_typed_amount_overrides_the_import(self, session):
+        """Последнее слово за человеком — он же видит перекрытую сумму."""
+        load(session)
+        put(session, "out_salary", 5_000_000)
+        assert first_day(matrix_service.matrix(session))["out_salary"] == 5_000_000
+
+    def test_erasing_returns_the_imported_amount(self, session):
+        """Пустое поле возвращает факт, а не обнуляет ячейку навсегда."""
+        load(session)
+        put(session, "out_salary", 5_000_000)
+        put(session, "out_salary", None)
+        assert first_day(matrix_service.matrix(session))["out_salary"] == 900_000
+
+    def test_zero_is_a_statement_not_an_erasure(self, session):
+        load(session)
+        put(session, "out_salary", 0)
+        assert first_day(matrix_service.matrix(session))["out_salary"] == 0
+
+    def test_totals_follow_the_typed_amount(self, session):
+        load(session)
+        before = first_day(matrix_service.matrix(session))["out_total"]
+        put(session, "out_salary", 900_000 + 1_000_000)
+        after = first_day(matrix_service.matrix(session))
+        assert after["out_total"] == before + 1_000_000
+        assert after["day_net"] == after["in_total"] - after["out_total"]
+
+    def test_cumulative_follows_the_typed_amount(self, session):
+        load(session)
+        before = first_day(matrix_service.matrix(session))["cumulative"]
+        put(session, "out_other", 2_000_000)
+        assert first_day(matrix_service.matrix(session))["cumulative"] == before - 2_000_000
+
+    def test_planned_day_without_an_import_moves_the_balance(self, session):
+        """Иначе кассовый разрыв обнаружится в день платежа, а не заранее."""
+        load(session)
+        future = DAY + timedelta(days=3)
+        put(session, "out_salary", 40_000_000, on_date=future)
+        result = matrix_service.matrix(session)
+        day = next(
+            index for index, item in enumerate(result["days"])
+            if item["date"] == future
+        )
+        cumulative = next(r for r in result["rows"] if r["code"] == "cumulative")
+        assert cumulative["values"][day] is not None
+        assert cumulative["values"][day] < 0
+
+    def test_computed_rows_reject_input(self, session):
+        for code in ("in_total", "out_total", "day_net", "cumulative"):
+            with pytest.raises(ValueError, match="считается"):
+                put(session, code, 1)
+
+    def test_unknown_row_rejected(self, session):
+        with pytest.raises(ValueError, match="нет"):
+            put(session, "нет-такой-строки", 1)
+
+    def test_captions_and_spacers_are_not_editable(self):
+        for row in matrix_service.ROWS:
+            if row.kind != matrix_service.KIND_ARTICLE:
+                assert row.code not in matrix_service.EDITABLE_CODES, row.code
+
+    def test_matrix_marks_which_cells_were_typed(self, session):
+        load(session)
+        put(session, "out_salary", 5_000_000)
+        row = next(
+            r for r in matrix_service.matrix(session)["rows"]
+            if r["code"] == "out_salary"
+        )
+        assert row["manual"] == [0]
+        # Под ручным вводом сохраняется то, что дала выгрузка
+        assert row["beneath"] == [900_000]
+        assert row["editable"] is True
+
+    def test_untouched_rows_report_no_manual_cells(self, session):
+        load(session)
+        row = next(
+            r for r in matrix_service.matrix(session)["rows"] if r["code"] == "out_taxes"
+        )
+        assert row["manual"] == []
+
+    def test_repeated_input_replaces_not_adds(self, session):
+        put(session, "out_salary", 100)
+        put(session, "out_salary", 250)
+        assert first_day(matrix_service.matrix(session))["out_salary"] == 250
+
+    def test_import_does_not_wipe_the_typed_amount(self, session):
+        """Выгрузка приходит каждый день, ввод пережить её обязан."""
+        put(session, "out_taxes_salary", 777_000)
+        load(session)
+        assert first_day(matrix_service.matrix(session))["out_taxes_salary"] == 777_000
+
+    def test_typed_day_counts_as_known_without_an_import(self, session):
+        put(session, "out_salary", 1)
+        result = matrix_service.matrix(session)
+        assert result["typed_days"] == 1
+        assert result["days"][0]["typed"] is True
+        assert result["days"][0]["loaded"] is False
+
+    def test_typed_amounts_reach_the_workbook_in_italics(self, session):
+        load(session)
+        put(session, "out_salary", 5_000_000)
+        result = matrix_service.matrix(session)
+        book = load_workbook(io.BytesIO(matrix_service.build_workbook(result)))
+        sheet = book["платежный календарь"]
+        # «7. Зарплата» — строка 31 файла
+        assert sheet["A31"].value == "7. Зарплата"
+        assert sheet["B31"].value == 5_000_000
+        assert sheet["B31"].font.i is True
+        # Соседняя статья пришла из выгрузки — обычным начертанием
+        assert sheet["A33"].value == "9. Налоги"
+        assert not sheet["B33"].font.i
+
+
+# ----------------------------------------------------------------------
 # Лист «Счета» и выгрузка
 # ----------------------------------------------------------------------
 class TestLedgerSheet:
