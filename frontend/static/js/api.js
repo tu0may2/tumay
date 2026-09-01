@@ -181,6 +181,23 @@
       }),
     cashHistory: (portfolio, days) =>
       request('/api/cash/history', { params: { portfolio, days } }),
+
+    // Календарь по статьям и выгрузка по лицевым счетам
+    calendarMatrix: (params) => request('/api/cash/matrix', { params }),
+    downloadMatrix: (params) => download('/api/cash/matrix/download', { params }),
+    ledgerSheet: (onDate) => request('/api/cash/ledger', { params: { on_date: onDate } }),
+    ledgerRules: () => request('/api/cash/ledger/rules'),
+    ledgerPreview: (file, onDate) => {
+      const form = new FormData();
+      form.append('file', file);
+      if (onDate) form.append('on_date', onDate);
+      return request('/api/cash/ledger/preview', { method: 'POST', form });
+    },
+    ledgerApply: (payload) =>
+      request('/api/cash/ledger/apply', { method: 'POST', body: payload }),
+    deleteLedger: (onDate) =>
+      request(`/api/cash/ledger/${onDate}`, { method: 'DELETE' }),
+
     cashAccounts: (portfolio) => request('/api/cash/accounts', { params: { portfolio } }),
     createAccount: (body) => request('/api/cash/accounts', { method: 'POST', body }),
     deleteAccount: (id) => request(`/api/cash/accounts/${id}`, { method: 'DELETE' }),

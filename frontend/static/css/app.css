@@ -32,6 +32,16 @@
 
   --shadow: rgba(2, 8, 5, 0.55);
 
+  /* Заливка строк платёжного календаря из рабочего файла казначейства:
+     голубой #00B0F0 и зелёный #92D050. Сплошной цвет на тёмной теме слепит
+     и съедает текст, поэтому берём те же оттенки, подмешанные в фон: строка
+     узнаётся по цвету, а текст остаётся читаемым. Цвета непрозрачные —
+     закреплённый столбец статей просвечивать не должен */
+  --matrix-accent: #123a41;
+  --matrix-accent-edge: #00b0f0;
+  --matrix-running: #2c4423;
+  --matrix-running-edge: #92d050;
+
   --radius: 10px;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -61,6 +71,11 @@
   --info: #226b8c;
 
   --shadow: rgba(18, 33, 26, 0.14);
+
+  --matrix-accent: #d6f2fd;
+  --matrix-accent-edge: #0091c8;
+  --matrix-running: #def1ca;
+  --matrix-running-edge: #6a9c2f;
 }
 
 * { box-sizing: border-box; }
@@ -302,6 +317,73 @@ th.sortable--active { color: var(--accent-strong); }
 .sortable__mark { opacity: 0.45; font-size: 10px; }
 th.sortable--active .sortable__mark { opacity: 1; }
 tbody tr.clickable { cursor: pointer; }
+
+/* ------------------------------------------------------------------ */
+/* Платёжный календарь: статьи слева, дни справа                       */
+/* ------------------------------------------------------------------ */
+/* Столбец статей закреплён: без него на третьем экране вправо уже не
+   видно, какую строку читаешь, и календарь становится бесполезен */
+.matrix-wrap { max-height: 620px; }
+.matrix { font-variant-numeric: tabular-nums; }
+.matrix th.matrix__side, .matrix td.matrix__side {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  text-align: left;
+  min-width: 330px;
+  max-width: 400px;
+  white-space: normal;
+  background: var(--bg-elev);
+}
+.matrix th.matrix__side { z-index: 3; background: var(--bg-elev-2); }
+.matrix td.matrix__day { font-family: var(--mono); font-size: 12px; }
+.matrix th.matrix__day { min-width: 108px; }
+/* Свободную ширину забирает замыкающий столбец, а не столбец статей */
+.matrix th.matrix__filler, .matrix td.matrix__filler {
+  width: 100%;
+  padding: 0;
+  border-bottom: none;
+}
+.matrix th.matrix__day--weekend, .matrix td.matrix__day--weekend { background: var(--bg-sunken); }
+/* День без выгрузки: в нём нечего читать, и это надо видеть сразу */
+.matrix th.matrix__day--empty { color: var(--text-mute); font-weight: 400; }
+/* Заголовок раздела и пустая строка — такие же строки файла, как статьи */
+.matrix tr.matrix__caption td {
+  background: var(--bg-sunken);
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+.matrix tr.matrix__caption td.matrix__side { background: var(--bg-sunken); }
+.matrix tr.matrix__spacer td { height: 12px; padding: 0; border-bottom: none; }
+.matrix tr.matrix__spacer:hover { background: none; }
+.matrix tr.matrix__total td { font-weight: 600; border-top: 1px solid var(--border); }
+/* Заливка, как в файле, — только на столбце статей: цветные строки данных
+   мешали бы читать сами суммы, а искали бы всё равно по названию слева */
+.matrix tr.matrix__accent td.matrix__side {
+  background: var(--matrix-accent);
+  box-shadow: inset 3px 0 0 var(--matrix-accent-edge);
+}
+.matrix tr.matrix__running { font-weight: 600; }
+.matrix tr.matrix__running td.matrix__side {
+  background: var(--matrix-running);
+  box-shadow: inset 3px 0 0 var(--matrix-running-edge);
+}
+.matrix tr.matrix__manual td.matrix__side { color: var(--text-mute); }
+.matrix__hint { display: block; font-size: 10.5px; color: var(--text-mute); text-transform: none; letter-spacing: 0; }
+
+.field--inline { flex-direction: row; align-items: center; gap: 7px; }
+.field--inline > span { text-transform: none; letter-spacing: 0; font-size: 12px; }
+.field--inline input, .field--inline select { padding: 5px 8px; font-size: 12px; }
+
+/* Второй заголовок в окне импорта не должен слипаться с таблицей выше */
+.modal__body .section-title + .table-wrap { margin-bottom: 16px; }
+.modal__body .table-wrap + .section-title { margin-top: 4px; }
+
+.btn--danger { color: var(--down); }
+.btn--danger:hover { border-color: var(--down); color: var(--down); }
 
 .sec { display: flex; flex-direction: column; gap: 1px; text-align: left; }
 .sec__code { font-family: var(--mono); font-weight: 600; font-size: 12.5px; }

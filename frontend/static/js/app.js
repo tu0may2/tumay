@@ -27,8 +27,12 @@
     portfolios: [],
     cashHorizon: 180,
     // Активная подвкладка платёжного календаря
-    calendarMode: 'calendar',
+    calendarMode: 'matrix',
     calendarData: null,
+    matrixData: null,
+    // День выгрузки по лицевым счетам, открытый на листе «Счета»
+    ledgerDate: null,
+    ledgerPreview: null,
     historyDays: 365,
     accounts: [],
     importDeals: [],
@@ -2315,13 +2319,17 @@
   }
 
   const CALENDAR_HINTS = {
+    matrix: 'Статьи по строкам, дни по столбцам',
+    ledger: 'Загруженная выгрузка по лицевым счетам',
     calendar: 'Ожидаемые движения денег с накопленным остатком',
     monthly: 'Тот же горизонт, свёрнутый по месяцам',
     history: 'Расчёты, которые уже прошли',
   };
 
   async function renderCalendar() {
-    const mode = state.calendarMode || 'calendar';
+    const mode = state.calendarMode || 'matrix';
+    if (mode === 'matrix') return renderMatrix();
+    if (mode === 'ledger') return renderLedger();
     if (mode === 'history') return renderCalendarHistory();
 
     const container = $('#cash-calendar-table');
@@ -2448,6 +2456,375 @@
       ], rows, { emptyMessage: 'Состоявшихся движений за период нет' });
     } catch (error) {
       failure(container, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Календарь по статьям и выгрузка по лицевым счетам
+  // ------------------------------------------------------------------
+
+  /** Параметры окна дат календаря: пустые поля означают «как загружено». */
+  function matrixParams() {
+    return {
+      date_from: $('#matrix-from') ? $('#matrix-from').value || undefined : undefined,
+      date_to: $('#matrix-to') ? $('#matrix-to').value || undefined : undefined,
+      only_loaded: $('#matrix-only-loaded') && $('#matrix-only-loaded').checked
+        ? true : undefined,
+    };
+  }
+
+  /** Календарь казначейства: статьи слева, дни справа. */
+  async function renderMatrix() {
+    const container = $('#matrix-table');
+    loading(container);
+
+    try {
+      const result = await api.calendarMatrix(matrixParams());
+      state.matrixData = result;
+
+      // Границы окна показываем в полях: иначе после первой загрузки не
+      // видно, за какой период вообще выведена таблица
+      if ($('#matrix-from') && !$('#matrix-from').value) {
+        $('#matrix-from').value = result.date_from;
+      }
+      if ($('#matrix-to') && !$('#matrix-to').value) {
+        $('#matrix-to').value = result.date_to;
+      }
+
+      const hint = $('#matrix-hint');
+      if (hint) {
+        hint.innerHTML = result.loaded_days
+          ? `Загружено дней: ${result.loaded_days}` +
+            (result.empty_days
+              ? ` <span class="down">, без выгрузки ${result.empty_days}</span>`
+              : '')
+          : '<span class="dim">Выгрузки ещё не загружены</span>';
+      }
+
+      // Замыкающий пустой столбец забирает свободную ширину на себя. Без него
+      // при двух загруженных днях столбец статей растягивается через весь
+      // экран, и название статьи уезжает от своей суммы на полметра
+      const head = ['<th class="matrix__side">Статья / Дата</th>']
+        .concat(result.days.map((day) => {
+          const classes = ['matrix__day'];
+          if (day.weekend) classes.push('matrix__day--weekend');
+          if (!day.loaded) classes.push('matrix__day--empty');
+          return `<th class="${classes.join(' ')}">${fmt.dateShort(new Date(day.date))}</th>`;
+        }))
+        .concat('<th class="matrix__filler"></th>')
+        .join('');
+
+      const span = result.days.length + 2;
+      const body = [];
+      result.rows.forEach((row) => {
+        // Заголовки разделов и пустые строки-разделители идут из раскладки
+        // рабочего файла: по ним глаз находит границу блока
+        if (row.kind === 'spacer') {
+          body.push(`<tr class="matrix__spacer"><td colspan="${span}"></td></tr>`);
+          return;
+        }
+        if (row.kind === 'caption') {
+          // Заголовок раздела занимает закреплённую ячейку, а не всю строку:
+          // при прокрутке вправо надпись «Планируемые Платежи» должна
+          // оставаться на виду — иначе непонятно, какой блок читаешь
+          body.push(
+            `<tr class="matrix__caption"><td class="matrix__side">` +
+            `${fmt.esc(row.title)}</td><td colspan="${span - 1}"></td></tr>`
+          );
+          return;
+        }
+
+        const classes = [];
+        if (row.code === 'in_total' || row.code === 'out_total' || row.code === 'day_net') {
+          classes.push('matrix__total');
+        }
+        if (row.accent) classes.push('matrix__accent');
+        if (row.running) classes.push('matrix__running');
+        if (row.fill === 'manual') classes.push('matrix__manual');
+
+        const cells = row.values.map((value, index) => {
+          const dayClasses = ['num', 'matrix__day'];
+          if (result.days[index].weekend) dayClasses.push('matrix__day--weekend');
+          if (value === null) return `<td class="${dayClasses.join(' ')}"></td>`;
+          const trend = row.code === 'day_net' || row.code === 'cumulative'
+            ? fmt.trendClass(value) : '';
+          // Полное число, без «12,3 млн»: календарь сверяют с выпиской, а
+          // сокращённая запись сравнение делает невозможным
+          return `<td class="${dayClasses.join(' ')}">` +
+            `<span class="${trend}">${fmt.num(value, 0)}</span></td>`;
+        }).join('');
+
+        const hintText = row.hint
+          ? `<span class="matrix__hint">${fmt.esc(row.hint)}</span>` : '';
+        body.push(
+          `<tr class="${classes.join(' ')}"><td class="matrix__side">` +
+          `${fmt.esc(row.title)}${hintText}</td>${cells}` +
+          '<td class="matrix__filler"></td></tr>'
+        );
+      });
+
+      container.innerHTML =
+        `<table class="matrix"><thead><tr>${head}</tr></thead>` +
+        `<tbody>${body.join('')}</tbody></table>`;
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  /** Лист «Счета»: из чего сложились суммы календаря. */
+  async function renderLedger() {
+    const container = $('#ledger-table');
+    loading(container);
+
+    try {
+      const sheet = await api.ledgerSheet(state.ledgerDate || undefined);
+      state.ledgerDate = sheet.load_date;
+
+      const select = $('#ledger-date');
+      if (select) {
+        select.innerHTML = sheet.dates.length
+          ? sheet.dates.map((day) =>
+              `<option value="${day}"${day === sheet.load_date ? ' selected' : ''}>` +
+              `${fmt.date(day)}</option>`).join('')
+          : '<option value="">нет загруженных дней</option>';
+      }
+
+      const hint = $('#ledger-hint');
+      if (hint) {
+        hint.innerHTML = sheet.rows.length
+          ? `${sheet.accounts} ${fmt.plural(sheet.accounts, 'счёт', 'счёта', 'счетов')}, ` +
+            `дебет ${fmt.rub(sheet.debit_total)}, кредит ${fmt.rub(sheet.credit_total)}` +
+            (sheet.unmapped
+              ? ` <span class="down">· без статьи ${sheet.unmapped}</span>` : '')
+          : '<span class="dim">Выгрузка на эту дату не загружена</span>';
+      }
+
+      renderTable(container, [
+        {
+          title: 'Лицевой счёт',
+          render: (row) => `<span class="sec__code">${fmt.esc(row.account)}</span>`,
+        },
+        {
+          title: 'Наименование',
+          render: (row) => `<span class="dim">${fmt.esc(row.account_name || '—')}</span>`,
+        },
+        {
+          title: 'Вх. остаток', className: 'num',
+          render: (row) => fmt.num(row.opening_balance, 2),
+        },
+        {
+          title: 'Дебет', className: 'num',
+          render: (row) => row.debit_turnover
+            ? `<span class="down">${fmt.num(row.debit_turnover, 2)}</span>` : '—',
+        },
+        {
+          title: 'Кредит', className: 'num',
+          render: (row) => row.credit_turnover
+            ? `<span class="up">${fmt.num(row.credit_turnover, 2)}</span>` : '—',
+        },
+        {
+          title: 'Исх. остаток', className: 'num',
+          render: (row) => fmt.num(row.closing_balance, 2),
+        },
+        {
+          title: 'Статья календаря',
+          render: (row) => {
+            const parts = [];
+            if (row.debit_title) parts.push(`<span class="badge">↓ ${fmt.esc(row.debit_title)}</span>`);
+            if (row.credit_title) parts.push(`<span class="badge">↑ ${fmt.esc(row.credit_title)}</span>`);
+            if (parts.length) return parts.join(' ');
+            // Корсчёт и ФОР в статьи не разносятся по замыслу, а вот обычный
+            // счёт с оборотом и без статьи в календарь не попал — это
+            // не косметика, а недостача в сумме дня
+            if (row.technical) return '<span class="dim">служебный счёт</span>';
+            return row.debit_turnover || row.credit_turnover
+              ? '<span class="down">не разнесён</span>'
+              : '<span class="dim">оборота нет</span>';
+          },
+        },
+      ], sheet.rows, { emptyMessage: 'Выгрузка на эту дату не загружена' });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  /** Классификатор счетов: по нему сверяют, куда ушла сумма. */
+  async function showLedgerRules() {
+    const modal = $('#rules-modal');
+    const container = $('#rules-table');
+    if (!modal || !container) return;
+    modal.hidden = false;
+    loading(container);
+
+    try {
+      const rules = await api.ledgerRules();
+      renderTable(container, [
+        {
+          title: 'Счёт начинается с',
+          render: (rule) => `<span class="sec__code">${fmt.esc(rule.prefix)}</span>`,
+        },
+        { title: 'Оборот', render: (rule) => fmt.esc(rule.direction_title) },
+        {
+          title: 'Статья календаря',
+          render: (rule) => fmt.esc(rule.row_title) +
+            (rule.note ? `<span class="matrix__hint">${fmt.esc(rule.note)}</span>` : '') +
+            (rule.confirm ? ' <span class="badge">уточнить</span>' : ''),
+        },
+      ], rules, { emptyMessage: 'Правил нет' });
+    } catch (error) {
+      failure(container, error);
+    }
+  }
+
+  /** Импорт выгрузки: разбор файла, показ разноски, запись. */
+  function openLedgerModal() {
+    const modal = $('#ledger-modal');
+    if (!modal) return;
+    state.ledgerPreview = null;
+    $('#ledger-submit').disabled = true;
+    // Поле даты и выбранный файл обнуляем: иначе дата прошлой загрузки
+    // переживает открытие окна и молча перебивает дату из нового файла —
+    // второй день лёг бы поверх первого, и об этом никто бы не узнал
+    $('#ledger-file').value = '';
+    $('#ledger-on-date').value = '';
+    $('#ledger-warnings').innerHTML = '';
+    $('#ledger-articles').innerHTML = '';
+    $('#ledger-preview').innerHTML = '';
+    $('#ledger-summary').textContent = '';
+    modal.hidden = false;
+  }
+
+  function closeLedgerModal() {
+    const modal = $('#ledger-modal');
+    if (modal) modal.hidden = true;
+  }
+
+  async function parseLedgerFile() {
+    const input = $('#ledger-file');
+    const file = input && input.files && input.files[0];
+    if (!file) {
+      toast('Выберите файл выгрузки', true);
+      return;
+    }
+
+    const container = $('#ledger-preview');
+    loading(container);
+    try {
+      const result = await api.ledgerPreview(file, $('#ledger-on-date').value || undefined);
+      state.ledgerPreview = result;
+
+      // Дату показываем в поле: файл мог сам её подсказать, и человек должен
+      // видеть, на какой день уйдут обороты, до нажатия «Загрузить»
+      $('#ledger-on-date').value = result.load_date;
+
+      $('#ledger-warnings').innerHTML = result.warnings.length
+        ? result.warnings.map((text) =>
+            `<p class="form-msg">${fmt.esc(text)}</p>`).join('')
+        : '';
+
+      renderTable($('#ledger-articles'), [
+        { title: 'Статья календаря', render: (row) => fmt.esc(row.row_title) },
+        {
+          title: 'Раздел',
+          render: (row) => `<span class="badge">${
+            row.section === 'inflow' ? 'поступления' : 'платежи'}</span>`,
+        },
+        { title: 'Счетов', className: 'num', render: (row) => String(row.accounts) },
+        { title: 'Сумма', className: 'num', render: (row) => fmt.rub(row.amount) },
+      ], result.articles, { emptyMessage: 'Ни один оборот не попал в статьи календаря' });
+
+      renderTable(container, [
+        {
+          title: 'Лицевой счёт',
+          render: (row) => `<span class="sec__code">${fmt.esc(row.account)}</span>`,
+        },
+        {
+          title: 'Наименование',
+          render: (row) => `<span class="dim">${fmt.esc(row.account_name || '—')}</span>`,
+        },
+        {
+          title: 'Дебет', className: 'num',
+          render: (row) => row.debit_turnover ? fmt.num(row.debit_turnover, 2) : '—',
+        },
+        {
+          title: 'Кредит', className: 'num',
+          render: (row) => row.credit_turnover ? fmt.num(row.credit_turnover, 2) : '—',
+        },
+        {
+          title: 'Статья',
+          render: (row) => {
+            const parts = [];
+            if (row.debit_title) parts.push(`↓ ${fmt.esc(row.debit_title)}`);
+            if (row.credit_title) parts.push(`↑ ${fmt.esc(row.credit_title)}`);
+            if (parts.length) {
+              return parts.join('<br>') +
+                (row.confirm ? ' <span class="badge">уточнить</span>' : '');
+            }
+            if (row.technical) return '<span class="dim">служебный счёт</span>';
+            return row.debit_turnover || row.credit_turnover
+              ? '<span class="down">не разнесён</span>'
+              : '<span class="dim">оборота нет</span>';
+          },
+        },
+      ], result.rows, { emptyMessage: 'В файле не нашлось ни одного счёта' });
+
+      $('#ledger-summary').textContent =
+        `${result.accounts} ${fmt.plural(result.accounts, 'счёт', 'счёта', 'счетов')} ` +
+        `на ${fmt.date(result.load_date)}: дебет ${fmt.rub(result.debit_total)}, ` +
+        `кредит ${fmt.rub(result.credit_total)}`;
+      $('#ledger-submit').disabled = !result.rows.length;
+    } catch (error) {
+      state.ledgerPreview = null;
+      $('#ledger-submit').disabled = true;
+      failure(container, error);
+    }
+  }
+
+  async function applyLedgerImport() {
+    const preview = state.ledgerPreview;
+    if (!preview) return;
+
+    const input = $('#ledger-file');
+    const file = input && input.files && input.files[0];
+    try {
+      const result = await api.ledgerApply({
+        // Дату берём из поля, а не из разбора: её могли поправить после
+        // предпросмотра, и молча загрузить не в тот день — худший исход
+        load_date: $('#ledger-on-date').value || preview.load_date,
+        rows: preview.rows,
+        source_file: file ? file.name.slice(0, 255) : null,
+      });
+      toast(
+        `Загружено счетов: ${result.written}` +
+        (result.removed ? `, заменено прежних ${result.removed}` : '')
+      );
+      closeLedgerModal();
+      state.ledgerDate = result.load_date;
+      // Окно дат сбрасываем: новый день мог оказаться за его границами
+      if ($('#matrix-from')) $('#matrix-from').value = '';
+      if ($('#matrix-to')) $('#matrix-to').value = '';
+      renderCalendar();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function dropLedgerDay() {
+    const day = state.ledgerDate;
+    if (!day) {
+      toast('Нет загруженного дня', true);
+      return;
+    }
+    if (!window.confirm(`Удалить выгрузку за ${fmt.date(day)}? Суммы этого дня уйдут из календаря.`)) {
+      return;
+    }
+    try {
+      const result = await api.deleteLedger(day);
+      toast(`Удалено строк: ${result.removed}`);
+      state.ledgerDate = null;
+      renderCalendar();
+    } catch (error) {
+      toast(error.message, true);
     }
   }
 
@@ -4409,9 +4786,30 @@
         renderCalendar();
       });
     });
-    on('#calendar-xlsx', 'click', () => saveFile(
+    // Календарь по статьям: окно дат, импорт выгрузки и книга Excel
+    on('#calendar-xlsx', 'click', () => saveFile(api.downloadMatrix(matrixParams())));
+    on('#calendar-events-xlsx', 'click', () => saveFile(
       api.downloadCalendar(state.portfolioName, state.cashHorizon, 'xlsx')
     ));
+    ['#matrix-from', '#matrix-to', '#matrix-only-loaded'].forEach((selector) => {
+      on(selector, 'change', renderMatrix);
+    });
+    on('#ledger-date', 'change', (event) => {
+      state.ledgerDate = event.target.value || null;
+      renderLedger();
+    });
+    on('#ledger-rules', 'click', showLedgerRules);
+    on('#ledger-drop', 'click', dropLedgerDay);
+    on('#ledger-import', 'click', openLedgerModal);
+    on('#ledger-import-2', 'click', openLedgerModal);
+    on('#ledger-parse', 'click', parseLedgerFile);
+    on('#ledger-submit', 'click', applyLedgerImport);
+    $$('[data-ledger-close]').forEach((node) =>
+      node.addEventListener('click', closeLedgerModal)
+    );
+    $$('[data-rules-close]').forEach((node) =>
+      node.addEventListener('click', () => { $('#rules-modal').hidden = true; })
+    );
     on('#account-add', 'click', () => {
       const form = $('#account-form');
       form.hidden = !form.hidden;
@@ -4546,8 +4944,10 @@
       if (event.key !== 'Escape') return;
       // Форма входа закрытию не подлежит: без неё терминал бесполезен
       if (!$('#login-modal').hidden) return;
-      // Окно добавления перекрывает карточку, поэтому закрываем его первым
-      if (!$('#buy-modal').hidden) closeBuyModal();
+      // Окна перекрывают карточку, поэтому закрываем верхнее из открытых
+      if (!$('#rules-modal').hidden) $('#rules-modal').hidden = true;
+      else if (!$('#ledger-modal').hidden) closeLedgerModal();
+      else if (!$('#buy-modal').hidden) closeBuyModal();
       else closeDrawer();
     });
 
