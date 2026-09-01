@@ -32,6 +32,16 @@
 
   --shadow: rgba(2, 8, 5, 0.55);
 
+  /* Заливка строк платёжного календаря из рабочего файла казначейства:
+     голубой #00B0F0 и зелёный #92D050. Сплошной цвет на тёмной теме слепит
+     и съедает текст, поэтому берём те же оттенки, подмешанные в фон: строка
+     узнаётся по цвету, а текст остаётся читаемым. Цвета непрозрачные —
+     закреплённый столбец статей просвечивать не должен */
+  --matrix-accent: #123a41;
+  --matrix-accent-edge: #00b0f0;
+  --matrix-running: #2c4423;
+  --matrix-running-edge: #92d050;
+
   --radius: 10px;
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -61,6 +71,11 @@
   --info: #226b8c;
 
   --shadow: rgba(18, 33, 26, 0.14);
+
+  --matrix-accent: #d6f2fd;
+  --matrix-accent-edge: #0091c8;
+  --matrix-running: #def1ca;
+  --matrix-running-edge: #6a9c2f;
 }
 
 * { box-sizing: border-box; }
@@ -315,27 +330,47 @@ tbody tr.clickable { cursor: pointer; }
   left: 0;
   z-index: 2;
   text-align: left;
-  min-width: 260px;
-  max-width: 320px;
+  min-width: 330px;
+  max-width: 400px;
   white-space: normal;
   background: var(--bg-elev);
 }
 .matrix th.matrix__side { z-index: 3; background: var(--bg-elev-2); }
 .matrix td.matrix__day { font-family: var(--mono); font-size: 12px; }
-.matrix th.matrix__day { min-width: 96px; }
+.matrix th.matrix__day { min-width: 108px; }
+/* Свободную ширину забирает замыкающий столбец, а не столбец статей */
+.matrix th.matrix__filler, .matrix td.matrix__filler {
+  width: 100%;
+  padding: 0;
+  border-bottom: none;
+}
 .matrix th.matrix__day--weekend, .matrix td.matrix__day--weekend { background: var(--bg-sunken); }
 /* День без выгрузки: в нём нечего читать, и это надо видеть сразу */
 .matrix th.matrix__day--empty { color: var(--text-mute); font-weight: 400; }
-.matrix tr.matrix__section td {
+/* Заголовок раздела и пустая строка — такие же строки файла, как статьи */
+.matrix tr.matrix__caption td {
   background: var(--bg-sunken);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 12.5px;
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
+.matrix tr.matrix__caption td.matrix__side { background: var(--bg-sunken); }
+.matrix tr.matrix__spacer td { height: 12px; padding: 0; border-bottom: none; }
+.matrix tr.matrix__spacer:hover { background: none; }
 .matrix tr.matrix__total td { font-weight: 600; border-top: 1px solid var(--border); }
-.matrix tr.matrix__running td { font-weight: 600; background: var(--accent-soft); }
-.matrix tr.matrix__running td.matrix__side { background: var(--accent-soft); }
+/* Заливка, как в файле, — только на столбце статей: цветные строки данных
+   мешали бы читать сами суммы, а искали бы всё равно по названию слева */
+.matrix tr.matrix__accent td.matrix__side {
+  background: var(--matrix-accent);
+  box-shadow: inset 3px 0 0 var(--matrix-accent-edge);
+}
+.matrix tr.matrix__running { font-weight: 600; }
+.matrix tr.matrix__running td.matrix__side {
+  background: var(--matrix-running);
+  box-shadow: inset 3px 0 0 var(--matrix-running-edge);
+}
 .matrix tr.matrix__manual td.matrix__side { color: var(--text-mute); }
 .matrix__hint { display: block; font-size: 10.5px; color: var(--text-mute); text-transform: none; letter-spacing: 0; }
 

@@ -5,11 +5,16 @@
 вид отвечает на вопрос «чем закрываем четверг», на который список движений,
 отсортированный по дате, отвечает плохо.
 
-Строки взяты один в один из рабочего файла казначейства, включая нумерацию
-статей и её неровности: в файле подряд идут две статьи «5.2», а «5. Депозит
-ЦБ» стоит выше «5.1. Депозит ЦБ_тело». Переименовывать их здесь нельзя —
-календарь сверяют глазами с прежним файлом, и любая «поправленная» строка
-превращает сверку в поиск отличий.
+Раскладка повторяет рабочий файл казначейства строка в строку: те же
+заголовки разделов, те же пустые строки между ними, тот же порядок и та же
+заливка. Сохранены и неровности: подряд идут две статьи «5.2», «5. Депозит
+ЦБ» стоит выше «5.1. Депозит ЦБ_тело», а «7. Прочее» встречается и в
+поступлениях, и в платежах под разными номерами. Переименовывать и
+переставлять их здесь нельзя — календарь сверяют глазами с прежним файлом,
+и любая «поправленная» строка превращает сверку в поиск отличий.
+
+Пустые строки — тоже часть раскладки, а не мусор: по ним глаз находит
+границу блока, и без них длинный столбец статей читается сплошняком.
 
 Суммы попадают в статьи из выгрузки по лицевым счетам: номер счёта определяет
 статью, оборот по дебету — платёж, оборот по кредиту — поступление. Правило
@@ -43,15 +48,6 @@ SECTION_BALANCE = "balance"
 SECTION_CLIENT = "client"
 SECTION_RATIOS = "ratios"
 
-SECTION_TITLES = {
-    SECTION_OPENING: "На начало дня",
-    SECTION_INFLOW: "Поступления денежных средств",
-    SECTION_OUTFLOW: "Планируемые Платежи",
-    SECTION_BALANCE: "Сальдо",
-    SECTION_CLIENT: "Остатки на клиентских счетах",
-    SECTION_RATIOS: "Нормативы и капитал",
-}
-
 #: Как строка календаря получает значение:
 #: ``ledger`` — из выгрузки, ``computed`` — считается терминалом,
 #: ``manual`` — заполняется руками (в выгрузке таких данных нет)
@@ -59,66 +55,112 @@ FILL_LEDGER = "ledger"
 FILL_COMPUTED = "computed"
 FILL_MANUAL = "manual"
 
+#: Что за строка в раскладке файла:
+#: ``article`` — статья с суммами, ``caption`` — заголовок раздела,
+#: ``spacer`` — пустая строка-разделитель
+KIND_ARTICLE = "article"
+KIND_CAPTION = "caption"
+KIND_SPACER = "spacer"
+
 
 class Row:
-    """Строка календаря: код для расчётов, заголовок — для глаз."""
+    """Строка календаря: код для расчётов, заголовок — для глаз.
 
-    __slots__ = ("code", "title", "section", "fill", "hint")
+    ``accent`` и ``running`` повторяют заливку рабочего файла: голубым в нём
+    отмечены статьи, которые тянутся из системы, зелёным — накопительное
+    сальдо. Цвет здесь не украшение: по нему казначей за секунду находит
+    строку, которую ищет, и терять его при переносе в терминал нельзя.
+    """
+
+    __slots__ = ("code", "title", "section", "fill", "hint", "kind", "accent", "running")
 
     def __init__(
-        self, code: str, title: str, section: str, fill: str, hint: str = ""
+        self,
+        code: str,
+        title: str,
+        section: str,
+        fill: str,
+        hint: str = "",
+        *,
+        kind: str = KIND_ARTICLE,
+        accent: bool = False,
+        running: bool = False,
     ) -> None:
         self.code = code
         self.title = title
         self.section = section
         self.fill = fill
         self.hint = hint
+        self.kind = kind
+        self.accent = accent
+        self.running = running
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "code": self.code,
             "title": self.title,
             "section": self.section,
-            "section_title": SECTION_TITLES[self.section],
             "fill": self.fill,
             "hint": self.hint,
+            "kind": self.kind,
+            "accent": self.accent,
+            "running": self.running,
         }
 
 
-#: Строки календаря в том порядке, в каком они идут в рабочем файле
+def _caption(code: str, title: str, section: str) -> Row:
+    return Row(code, title, section, FILL_MANUAL, kind=KIND_CAPTION)
+
+
+def _spacer(code: str, section: str) -> Row:
+    return Row(code, "", section, FILL_MANUAL, kind=KIND_SPACER)
+
+
+#: Строки календаря ровно в том порядке и с той заливкой, в каких они идут в
+#: рабочем файле казначейства (строки 2–55 листа «платежный календарь»)
 ROWS: tuple[Row, ...] = (
     Row("opening", "На начало дня Остаток на кор. счете 30102",
-        SECTION_OPENING, FILL_LEDGER, "Входящий остаток счёта 30102"),
+        SECTION_OPENING, FILL_LEDGER, "Входящий остаток счёта 30102", accent=True),
 
-    Row("in_loans_retail", "1. Кредиты ФЛ", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_loans_corp", "1.1. Кредиты ЮЛ", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_loans_cession", "1.2. Кредиты ФЛ Цессия", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_ibl_principal", "2.1. МБК_тело", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_ibl_interest", "2.2. МБК_ проценты", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_sfuk_principal", "3.1. СФУК_тело", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_sfuk_interest", "3.2. СФУК_проценты", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_deposit_corp", "4. Депозит ЮЛ_тело", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_deposit_cbr", "5. Депозит ЦБ", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_deposit_expo", "5.2. Депозит в Экспо", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_deposit_cbr_principal", "5.1. Депозит ЦБ_тело", SECTION_INFLOW, FILL_LEDGER),
-    Row("in_deposit_cbr_interest", "5.2. Депозит ЦБ_проценты", SECTION_INFLOW, FILL_LEDGER),
+    _caption("cap_inflow", "Поступления денежных средств", SECTION_INFLOW),
+    Row("in_loans_retail", "1. Кредиты ФЛ", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_loans_corp", "1.1. Кредиты ЮЛ", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_loans_cession", "1.2. Кредиты ФЛ Цессия", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_ibl_principal", "2.1. МБК_тело", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_ibl_interest", "2.2. МБК_ проценты", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_sfuk_principal", "3.1. СФУК_тело", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_sfuk_interest", "3.2. СФУК_проценты", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_deposit_corp", "4. Депозит ЮЛ_тело", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_deposit_cbr", "5. Депозит ЦБ", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_deposit_expo", "5.2. Депозит в Экспо", SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_deposit_cbr_principal", "5.1. Депозит ЦБ_тело", SECTION_INFLOW, FILL_LEDGER,
+        accent=True),
+    Row("in_deposit_cbr_interest", "5.2. Депозит ЦБ_проценты", SECTION_INFLOW, FILL_LEDGER,
+        accent=True),
     Row("in_client_accounts", "6. Движения по расчетным счетам клиентов (Поступления)",
-        SECTION_INFLOW, FILL_LEDGER),
-    Row("in_other", "7. Прочее", SECTION_INFLOW, FILL_LEDGER),
+        SECTION_INFLOW, FILL_LEDGER, accent=True),
+    Row("in_other", "7. Прочее", SECTION_INFLOW, FILL_LEDGER, accent=True),
     Row("in_total", "ИТОГО поступлений", SECTION_INFLOW, FILL_COMPUTED,
-        "Сумма статей поступлений"),
+        "Сумма статей поступлений", accent=True),
 
-    Row("out_loans_cession", "1. Кредиты ФЛ Цессия", SECTION_OUTFLOW, FILL_LEDGER),
-    Row("out_loans_corp", "1.1. Кредиты ЮЛ", SECTION_OUTFLOW, FILL_LEDGER),
-    Row("out_ibl_principal", "2.1. МБК_тело", SECTION_OUTFLOW, FILL_LEDGER),
-    Row("out_ibl_interest", "2.2. МБК_проценты", SECTION_OUTFLOW, FILL_LEDGER),
-    Row("out_sfuk_principal", "3. СФУК_тело", SECTION_OUTFLOW, FILL_LEDGER),
-    Row("out_deposit_corp_principal", "4.1. Депозит ЮЛ _тело", SECTION_OUTFLOW, FILL_LEDGER),
-    Row("out_deposit_corp_interest", "4.2. Депозиты ЮЛ_проценты", SECTION_OUTFLOW, FILL_LEDGER),
-    Row("out_deposit_cbr", "5.1. Депозит ЦБ", SECTION_OUTFLOW, FILL_LEDGER),
-    Row("out_deposit_expo", "5.2. Депозит в Экспо", SECTION_OUTFLOW, FILL_LEDGER),
+    _spacer("gap_inflow", SECTION_INFLOW),
+    _caption("cap_outflow", "Планируемые Платежи", SECTION_OUTFLOW),
+    Row("out_loans_cession", "1. Кредиты ФЛ Цессия", SECTION_OUTFLOW, FILL_LEDGER,
+        accent=True),
+    Row("out_loans_corp", "1.1. Кредиты ЮЛ", SECTION_OUTFLOW, FILL_LEDGER, accent=True),
+    Row("out_ibl_principal", "2.1. МБК_тело", SECTION_OUTFLOW, FILL_LEDGER, accent=True),
+    Row("out_ibl_interest", "2.2. МБК_проценты", SECTION_OUTFLOW, FILL_LEDGER, accent=True),
+    Row("out_sfuk_principal", "3. СФУК_тело", SECTION_OUTFLOW, FILL_LEDGER, accent=True),
+    Row("out_deposit_corp_principal", "4.1. Депозит ЮЛ _тело", SECTION_OUTFLOW, FILL_LEDGER,
+        accent=True),
+    Row("out_deposit_corp_interest", "4.2. Депозиты ЮЛ_проценты", SECTION_OUTFLOW,
+        FILL_LEDGER, accent=True),
+    Row("out_deposit_cbr", "5.1. Депозит ЦБ", SECTION_OUTFLOW, FILL_LEDGER, accent=True),
+    Row("out_deposit_expo", "5.2. Депозит в Экспо", SECTION_OUTFLOW, FILL_LEDGER,
+        accent=True),
     Row("out_client_accounts", "6. Движения по расчетным счетам клиентов (Списания)",
-        SECTION_OUTFLOW, FILL_LEDGER),
+        SECTION_OUTFLOW, FILL_LEDGER, accent=True),
+    # Строки 31–35 файла заливки не имеют: их казначейство ведёт руками
     Row("out_salary", "7. Зарплата", SECTION_OUTFLOW, FILL_LEDGER),
     Row("out_overhead", "8. Платежи общехозяйственные (поставщикам услуг через WSS)",
         SECTION_OUTFLOW, FILL_LEDGER),
@@ -126,40 +168,52 @@ ROWS: tuple[Row, ...] = (
     Row("out_taxes_salary", "10. Налоги зп", SECTION_OUTFLOW, FILL_LEDGER),
     Row("out_other", "11. Прочее", SECTION_OUTFLOW, FILL_LEDGER),
     Row("out_total", "ИТОГО платежей", SECTION_OUTFLOW, FILL_COMPUTED,
-        "Сумма статей платежей"),
+        "Сумма статей платежей", accent=True),
 
+    _spacer("gap_outflow", SECTION_BALANCE),
     Row("day_net", "САЛЬДО ДНЯ", SECTION_BALANCE, FILL_COMPUTED,
         "Поступления минус платежи"),
     Row("reserve_for", "в т.ч. ФОР", SECTION_BALANCE, FILL_LEDGER,
         "Обязательные резервы, счёт 302"),
     Row("cumulative", "Накопительное сальдо", SECTION_BALANCE, FILL_COMPUTED,
-        "Остаток на начало плюс сальдо всех дней с начала периода"),
+        "Остаток на начало плюс сальдо всех дней с начала периода", running=True),
 
+    _spacer("gap_balance", SECTION_CLIENT),
+    _caption("cap_client", "Остатки на клиентских счетах", SECTION_CLIENT),
     Row("client_407_408", "Счет 407, Счет 408", SECTION_CLIENT, FILL_LEDGER,
         "Исходящий остаток расчётных счетов клиентов"),
     Row("client_420_421", "Счет 420, Счет 421", SECTION_CLIENT, FILL_LEDGER,
         "Исходящий остаток депозитов"),
 
+    _spacer("gap_client", SECTION_RATIOS),
     Row("h2", "Н2 (триггер не менее 17,5)", SECTION_RATIOS, FILL_MANUAL,
         "Считается на вкладке «Нормативы»"),
+    _spacer("gap_h2", SECTION_RATIOS),
     Row("h3", "Н3 (триггер не менее 57,50)", SECTION_RATIOS, FILL_MANUAL,
         "Считается на вкладке «Нормативы»"),
+    _spacer("gap_h3", SECTION_RATIOS),
     Row("retail_old", "Для Retail и цессия (стар)", SECTION_RATIOS, FILL_MANUAL),
     Row("tranche_1", "Для 1-го транша (не удалять)", SECTION_RATIOS, FILL_MANUAL),
     Row("tranche_2", "Для 2-го транша (не удалять)", SECTION_RATIOS, FILL_MANUAL),
     Row("long_12m", "Остаток со сроком 12+ мес.", SECTION_RATIOS, FILL_MANUAL),
     Row("capital", "Капитал", SECTION_RATIOS, FILL_MANUAL),
-    Row("h4", "Н4", SECTION_RATIOS, FILL_MANUAL,
-        "Считается на вкладке «Нормативы»"),
+    Row("h4", "Н4", SECTION_RATIOS, FILL_MANUAL, "Считается на вкладке «Нормативы»"),
 )
 
-ROW_BY_CODE: dict[str, Row] = {row.code: row for row in ROWS}
+#: Только строки с суммами: заголовки и пустые строки в расчётах не участвуют
+ARTICLE_ROWS: tuple[Row, ...] = tuple(
+    row for row in ROWS if row.kind == KIND_ARTICLE
+)
+
+ROW_BY_CODE: dict[str, Row] = {row.code: row for row in ARTICLE_ROWS}
 
 INFLOW_CODES: tuple[str, ...] = tuple(
-    row.code for row in ROWS if row.section == SECTION_INFLOW and row.fill == FILL_LEDGER
+    row.code for row in ARTICLE_ROWS
+    if row.section == SECTION_INFLOW and row.fill == FILL_LEDGER
 )
 OUTFLOW_CODES: tuple[str, ...] = tuple(
-    row.code for row in ROWS if row.section == SECTION_OUTFLOW and row.fill == FILL_LEDGER
+    row.code for row in ARTICLE_ROWS
+    if row.section == SECTION_OUTFLOW and row.fill == FILL_LEDGER
 )
 
 
@@ -309,7 +363,7 @@ def loaded_dates(session: Session) -> list[date]:
 
 
 def _blank_column() -> dict[str, float | None]:
-    return {row.code: None for row in ROWS}
+    return {row.code: None for row in ARTICLE_ROWS}
 
 
 def _fill_day(entries: Sequence[LedgerRow]) -> dict[str, float | None]:
@@ -439,7 +493,17 @@ def matrix(
             for day in days
         ],
         "rows": [
-            {**row.as_dict(), "values": [columns[day][row.code] for day in days]}
+            {
+                **row.as_dict(),
+                # У заголовка и пустой строки сумм нет, но пустой список
+                # значений отдаём всё равно: тогда клиенту не нужно знать
+                # заранее, у каких строк колонки есть, а у каких нет
+                "values": (
+                    [columns[day][row.code] for day in days]
+                    if row.kind == KIND_ARTICLE
+                    else []
+                ),
+            }
             for row in ROWS
         ],
         "loaded_days": len(loaded_set),
@@ -526,20 +590,27 @@ LEDGER_COLUMNS: tuple[dict[str, Any], ...] = (
     {"code": "credit_title", "title": "Статья (кредит)", "kind": "text"},
 )
 
-#: Оформление календаря повторяет рабочий файл: синим выделены строки,
-#: с которых начинают читать день, зелёным — накопительное сальдо
-_FILL_KEY = PatternFill("solid", fgColor="00B0F0")
+#: Цвета взяты пипеткой из рабочего файла казначейства: голубым в нём отмечены
+#: статьи, которые тянутся из системы, зелёным — накопительное сальдо
+_FILL_ACCENT = PatternFill("solid", fgColor="00B0F0")
 _FILL_RUNNING = PatternFill("solid", fgColor="92D050")
-_FILL_SECTION = PatternFill("solid", fgColor="D9E1F2")
 _FILL_WEEKEND = PatternFill("solid", fgColor="F2F2F2")
-_THIN = Side(style="thin", color="BFBFBF")
-_BORDER = Border(bottom=_THIN)
+_THIN = Side(style="thin", color="000000")
+_MEDIUM = Side(style="medium", color="000000")
 _MONEY = "# ##0.00"
 
-#: Строки, которые в файле казначейства выделены цветом
-_KEY_ROWS = {"opening", "in_total", "out_total"}
-_RUNNING_ROWS = {"cumulative"}
-_BOLD_ROWS = _KEY_ROWS | _RUNNING_ROWS | {"day_net"}
+#: Размер шрифта в файле — 11 для статей и 8 для дат в шапке
+_TITLE_FONT = Font(bold=True, size=11)
+_PLAIN_FONT = Font(size=11)
+_DATE_FONT = Font(bold=True, size=8)
+
+#: Строки, у которых в файле нет рамки: аналитический блок под календарём
+#: отделён от него пустой строкой и рамкой не обведён
+_NO_BORDER_SECTIONS = {SECTION_RATIOS}
+
+#: В файле жирным набран весь столбец статей, кроме двух строк остатков
+#: клиентов — их набрали обычным начертанием
+_LIGHT_LABEL_ROWS = {"client_407_408", "client_420_421"}
 
 
 def build_workbook(
@@ -547,60 +618,70 @@ def build_workbook(
 ) -> bytes:
     """Собрать книгу в том же виде, в каком календарь ведут в казначействе.
 
-    Раскладка сохранена намеренно: файл уходит людям, которые годами читают
-    его глазами, и перестроенная под «как удобнее программе» таблица заставила
-    бы их заново искать каждую строку.
+    Раскладка повторяет исходный файл строка в строку: заголовки разделов,
+    пустые строки между блоками, заливка и рамки на своих местах. Это не
+    аккуратность ради аккуратности — файл уходит людям, которые годами читают
+    его глазами, и перестроенная «как удобнее программе» таблица заставила бы
+    их заново искать каждую строку.
+
+    Два отличия от исходника сделаны сознательно. Даты пишем форматом
+    ДД.ММ.ГГГГ вместо стоявшего в файле mm-dd-yy: американский порядок в
+    русском календаре читается как другая дата, и это ошибка, а не решение.
+    Суммам задан денежный формат вместо «Общего» — иначе Excel показывает
+    12300000 там, где нужно 12 300 000,00.
     """
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "платежный календарь"
 
     days = result["days"]
-    sheet.cell(row=1, column=1, value="Статья/Дата").font = Font(bold=True, size=9)
+    header = sheet.cell(row=1, column=1, value="Статья/Дата")
+    header.font = _TITLE_FONT
+    header.border = Border(top=_THIN, bottom=_THIN)
     for index, day in enumerate(days, start=2):
         cell = sheet.cell(row=1, column=index, value=day["date"])
         cell.number_format = "DD.MM.YYYY"
-        cell.font = Font(bold=True, size=8)
+        cell.font = _DATE_FONT
         cell.alignment = Alignment(horizontal="center")
+        cell.border = Border(top=_THIN, bottom=_THIN)
         if day["weekend"]:
             cell.fill = _FILL_WEEKEND
 
-    previous_section: str | None = None
-    row_index = 2
-    for row in result["rows"]:
-        # Между разделами оставляем пустую строку, как в рабочем файле
-        if previous_section is not None and row["section"] != previous_section:
-            title = sheet.cell(row=row_index, column=1, value=row["section_title"])
-            title.font = Font(bold=True, size=9)
-            title.fill = _FILL_SECTION
-            row_index += 1
-        previous_section = row["section"]
+    for offset, row in enumerate(result["rows"], start=2):
+        # Пустая строка-разделитель: в файле она есть, и место занимает
+        if row["kind"] == KIND_SPACER:
+            continue
 
-        label = sheet.cell(row=row_index, column=1, value=row["title"])
-        label.font = Font(bold=row["code"] in _BOLD_ROWS, size=9)
-        label.border = _BORDER
-        if row["code"] in _KEY_ROWS:
-            label.fill = _FILL_KEY
-        elif row["code"] in _RUNNING_ROWS:
+        bordered = row["section"] not in _NO_BORDER_SECTIONS
+        # Заголовок «Остатки на клиентских счетах» в файле обведён жирнее
+        side = _MEDIUM if row["kind"] == KIND_CAPTION and bordered else _THIN
+        border = Border(top=side, bottom=side) if bordered else Border()
+
+        label = sheet.cell(row=offset, column=1, value=row["title"])
+        label.font = _PLAIN_FONT if row["code"] in _LIGHT_LABEL_ROWS else _TITLE_FONT
+        label.border = border
+        if row["accent"]:
+            label.fill = _FILL_ACCENT
+        elif row["running"]:
             label.fill = _FILL_RUNNING
 
-        for offset, value in enumerate(row["values"]):
-            cell = sheet.cell(row=row_index, column=offset + 2)
+        for index, value in enumerate(row["values"]):
+            cell = sheet.cell(row=offset, column=index + 2)
             if value is not None:
                 cell.value = value
                 cell.number_format = _MONEY
-            cell.font = Font(bold=row["code"] in _BOLD_ROWS, size=9)
-            if row["code"] in _KEY_ROWS:
-                cell.fill = _FILL_KEY
-            elif row["code"] in _RUNNING_ROWS:
+            cell.font = _PLAIN_FONT
+            cell.border = border
+            if row["running"]:
                 cell.fill = _FILL_RUNNING
-            elif days[offset]["weekend"]:
+            elif days[index]["weekend"]:
                 cell.fill = _FILL_WEEKEND
-        row_index += 1
 
+    # Ширина столбца статей в файле 29, но при ней длинные названия обрезаны;
+    # берём такую, при которой самая длинная статья видна целиком
     sheet.column_dimensions["A"].width = 46
     for index in range(2, len(days) + 2):
-        sheet.column_dimensions[get_column_letter(index)].width = 14
+        sheet.column_dimensions[get_column_letter(index)].width = 15
     sheet.freeze_panes = "B2"
 
     if ledger is not None:

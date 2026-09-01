@@ -2501,6 +2501,9 @@
           : '<span class="dim">Выгрузки ещё не загружены</span>';
       }
 
+      // Замыкающий пустой столбец забирает свободную ширину на себя. Без него
+      // при двух загруженных днях столбец статей растягивается через весь
+      // экран, и название статьи уезжает от своей суммы на полметра
       const head = ['<th class="matrix__side">Статья / Дата</th>']
         .concat(result.days.map((day) => {
           const classes = ['matrix__day'];
@@ -2508,24 +2511,35 @@
           if (!day.loaded) classes.push('matrix__day--empty');
           return `<th class="${classes.join(' ')}">${fmt.dateShort(new Date(day.date))}</th>`;
         }))
+        .concat('<th class="matrix__filler"></th>')
         .join('');
 
-      let previousSection = null;
+      const span = result.days.length + 2;
       const body = [];
       result.rows.forEach((row) => {
-        if (previousSection !== null && row.section !== previousSection) {
-          body.push(
-            `<tr class="matrix__section"><td colspan="${result.days.length + 1}">` +
-            `${fmt.esc(row.section_title)}</td></tr>`
-          );
+        // Заголовки разделов и пустые строки-разделители идут из раскладки
+        // рабочего файла: по ним глаз находит границу блока
+        if (row.kind === 'spacer') {
+          body.push(`<tr class="matrix__spacer"><td colspan="${span}"></td></tr>`);
+          return;
         }
-        previousSection = row.section;
+        if (row.kind === 'caption') {
+          // Заголовок раздела занимает закреплённую ячейку, а не всю строку:
+          // при прокрутке вправо надпись «Планируемые Платежи» должна
+          // оставаться на виду — иначе непонятно, какой блок читаешь
+          body.push(
+            `<tr class="matrix__caption"><td class="matrix__side">` +
+            `${fmt.esc(row.title)}</td><td colspan="${span - 1}"></td></tr>`
+          );
+          return;
+        }
 
         const classes = [];
         if (row.code === 'in_total' || row.code === 'out_total' || row.code === 'day_net') {
           classes.push('matrix__total');
         }
-        if (row.code === 'cumulative' || row.code === 'opening') classes.push('matrix__running');
+        if (row.accent) classes.push('matrix__accent');
+        if (row.running) classes.push('matrix__running');
         if (row.fill === 'manual') classes.push('matrix__manual');
 
         const cells = row.values.map((value, index) => {
@@ -2544,7 +2558,8 @@
           ? `<span class="matrix__hint">${fmt.esc(row.hint)}</span>` : '';
         body.push(
           `<tr class="${classes.join(' ')}"><td class="matrix__side">` +
-          `${fmt.esc(row.title)}${hintText}</td>${cells}</tr>`
+          `${fmt.esc(row.title)}${hintText}</td>${cells}` +
+          '<td class="matrix__filler"></td></tr>'
         );
       });
 

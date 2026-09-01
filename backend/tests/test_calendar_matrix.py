@@ -86,6 +86,121 @@ SAMPLE = [
 
 
 # ----------------------------------------------------------------------
+# Раскладка эталонного файла
+# ----------------------------------------------------------------------
+#: Столбец A рабочего файла казначейства, строки 2–55, слово в слово.
+#:
+#: Этот список — договор с казначейством, а не украшение теста: календарь
+#: сверяют глазами с прежним файлом, и переставленная, переименованная или
+#: потерянная строка ломает сверку молча. Пустые строки значимы так же, как
+#: заполненные: по ним глаз находит границу блока.
+TEMPLATE_COLUMN_A: tuple[str, ...] = (
+    "На начало дня Остаток на кор. счете 30102",
+    "Поступления денежных средств",
+    "1. Кредиты ФЛ",
+    "1.1. Кредиты ЮЛ",
+    "1.2. Кредиты ФЛ Цессия",
+    "2.1. МБК_тело",
+    "2.2. МБК_ проценты",
+    "3.1. СФУК_тело",
+    "3.2. СФУК_проценты",
+    "4. Депозит ЮЛ_тело",
+    "5. Депозит ЦБ",
+    "5.2. Депозит в Экспо",
+    "5.1. Депозит ЦБ_тело",
+    "5.2. Депозит ЦБ_проценты",
+    "6. Движения по расчетным счетам клиентов (Поступления)",
+    "7. Прочее",
+    "ИТОГО поступлений",
+    "",
+    "Планируемые Платежи",
+    "1. Кредиты ФЛ Цессия",
+    "1.1. Кредиты ЮЛ",
+    "2.1. МБК_тело",
+    "2.2. МБК_проценты",
+    "3. СФУК_тело",
+    "4.1. Депозит ЮЛ _тело",
+    "4.2. Депозиты ЮЛ_проценты",
+    "5.1. Депозит ЦБ",
+    "5.2. Депозит в Экспо",
+    "6. Движения по расчетным счетам клиентов (Списания)",
+    "7. Зарплата",
+    "8. Платежи общехозяйственные (поставщикам услуг через WSS)",
+    "9. Налоги",
+    "10. Налоги зп",
+    "11. Прочее",
+    "ИТОГО платежей",
+    "",
+    "САЛЬДО ДНЯ",
+    "в т.ч. ФОР",
+    "Накопительное сальдо",
+    "",
+    "Остатки на клиентских счетах",
+    "Счет 407, Счет 408",
+    "Счет 420, Счет 421",
+    "",
+    "Н2 (триггер не менее 17,5)",
+    "",
+    "Н3 (триггер не менее 57,50)",
+    "",
+    "Для Retail и цессия (стар)",
+    "Для 1-го транша (не удалять)",
+    "Для 2-го транша (не удалять)",
+    "Остаток со сроком 12+ мес.",
+    "Капитал",
+    "Н4",
+)
+
+
+class TestTemplateLayout:
+    def test_rows_repeat_the_template_column_word_for_word(self):
+        assert tuple(row.title for row in matrix_service.ROWS) == TEMPLATE_COLUMN_A
+
+    def test_captions_and_spacers_are_rows_not_decoration(self):
+        """В файле это настоящие строки — терминал не должен их выдумывать."""
+        kinds = {row.title: row.kind for row in matrix_service.ROWS}
+        assert kinds["Поступления денежных средств"] == matrix_service.KIND_CAPTION
+        assert kinds["Планируемые Платежи"] == matrix_service.KIND_CAPTION
+        assert kinds["Остатки на клиентских счетах"] == matrix_service.KIND_CAPTION
+        assert kinds[""] == matrix_service.KIND_SPACER
+
+    def test_no_invented_section_headings(self):
+        """Над «САЛЬДО ДНЯ» и над блоком нормативов в файле заголовка нет."""
+        titles = [row.title for row in matrix_service.ROWS]
+        index = titles.index("САЛЬДО ДНЯ")
+        assert titles[index - 1] == ""
+        assert titles.index("Н2 (триггер не менее 17,5)") - 1 == titles.index(
+            "", titles.index("Счет 420, Счет 421")
+        )
+
+    def test_row_codes_are_unique(self):
+        codes = [row.code for row in matrix_service.ROWS]
+        assert len(codes) == len(set(codes))
+
+    def test_only_articles_carry_values(self, session):
+        result = matrix_service.matrix(session)
+        for row in result["rows"]:
+            if row["kind"] == matrix_service.KIND_ARTICLE:
+                assert len(row["values"]) == len(result["days"]), row["title"]
+            else:
+                assert row["values"] == [], row["title"]
+
+    def test_accent_matches_the_template_fill(self):
+        """Голубая заливка файла: строка начала дня, поступления и оба ИТОГО."""
+        accented = {row.title for row in matrix_service.ROWS if row.accent}
+        assert "На начало дня Остаток на кор. счете 30102" in accented
+        assert "ИТОГО поступлений" in accented
+        assert "ИТОГО платежей" in accented
+        # Строки 31–35 файла залиты не были — казначейство ведёт их руками
+        assert "7. Зарплата" not in accented
+        assert "9. Налоги" not in accented
+
+    def test_running_total_is_the_green_row(self):
+        running = [row.title for row in matrix_service.ROWS if row.running]
+        assert running == ["Накопительное сальдо"]
+
+
+# ----------------------------------------------------------------------
 # Разноска счетов
 # ----------------------------------------------------------------------
 class TestClassifier:
@@ -234,6 +349,15 @@ class TestParse:
 # ----------------------------------------------------------------------
 # Предпросмотр и запись
 # ----------------------------------------------------------------------
+def first_day(result) -> dict:
+    """Суммы первого столбца по кодам статей: заголовки и пустые строки мимо."""
+    return {
+        row["code"]: row["values"][0]
+        for row in result["rows"]
+        if row["kind"] == matrix_service.KIND_ARTICLE
+    }
+
+
 def load(session, rows=SAMPLE, *, on_date=DAY):
     content = build_export(rows)
     preview = ledger_service.preview(session, content, "оборотка.xlsx", on_date=on_date)
@@ -324,7 +448,7 @@ class TestMatrix:
     def test_totals_sum_the_articles(self, session):
         load(session)
         result = matrix_service.matrix(session)
-        by_code = {row["code"]: row["values"][0] for row in result["rows"]}
+        by_code = first_day(result)
         assert by_code["out_total"] == 900_000 + 300_000 + 120_000 + 2_000_000 \
             + 1_500_000 + 400_000
         assert by_code["in_total"] == 750_000 + 1_100_000 + 3_000_000
@@ -333,7 +457,7 @@ class TestMatrix:
     def test_cumulative_starts_from_the_opening_balance(self, session):
         load(session)
         result = matrix_service.matrix(session)
-        by_code = {row["code"]: row["values"][0] for row in result["rows"]}
+        by_code = first_day(result)
         assert by_code["cumulative"] == 5_000_000 + by_code["day_net"]
 
     def test_cumulative_carries_across_days(self, session):
@@ -363,17 +487,9 @@ class TestMatrix:
     def test_client_balances_are_shown_without_sign(self, session):
         load(session)
         result = matrix_service.matrix(session)
-        by_code = {row["code"]: row["values"][0] for row in result["rows"]}
+        by_code = first_day(result)
         assert by_code["client_407_408"] == 700_000
         assert by_code["client_420_421"] == 3_000_000
-
-    def test_rows_follow_the_treasury_file_order(self, session):
-        result = matrix_service.matrix(session)
-        titles = [row["title"] for row in result["rows"]]
-        assert titles[0] == "На начало дня Остаток на кор. счете 30102"
-        assert titles.index("ИТОГО поступлений") < titles.index("ИТОГО платежей")
-        assert titles.index("ИТОГО платежей") < titles.index("САЛЬДО ДНЯ")
-        assert "Накопительное сальдо" in titles
 
     def test_empty_database_still_returns_the_structure(self, session):
         result = matrix_service.matrix(session)
@@ -432,6 +548,40 @@ class TestLedgerSheet:
         assert sheet["B1"].value.date() == DAY
         assert sheet["A2"].value == "На начало дня Остаток на кор. счете 30102"
         assert sheet["B2"].value == 5_000_000
+
+    def test_workbook_reproduces_the_template_row_for_row(self, session):
+        """Строка за строкой, включая пустые: по этому файлу ведут сверку."""
+        load(session)
+        result = matrix_service.matrix(session)
+        book = load_workbook(io.BytesIO(matrix_service.build_workbook(result)))
+        sheet = book["платежный календарь"]
+
+        column = tuple(
+            sheet.cell(row=index, column=1).value or ""
+            for index in range(2, 2 + len(TEMPLATE_COLUMN_A))
+        )
+        assert column == TEMPLATE_COLUMN_A
+        # Ровно как в исходнике: статьи занимают строки 2–55
+        assert sheet.cell(row=55, column=1).value == "Н4"
+
+    def test_workbook_keeps_the_template_colours(self, session):
+        load(session)
+        result = matrix_service.matrix(session)
+        book = load_workbook(io.BytesIO(matrix_service.build_workbook(result)))
+        sheet = book["платежный календарь"]
+
+        # Голубая заливка на «На начало дня» и «ИТОГО поступлений»
+        assert sheet["A2"].fill.fgColor.rgb.endswith("00B0F0")
+        assert sheet["A18"].fill.fgColor.rgb.endswith("00B0F0")
+        # Зелёная — на накопительном сальдо
+        assert sheet["A40"].fill.fgColor.rgb.endswith("92D050")
+
+    def test_workbook_writes_dates_in_russian_order(self, session):
+        """mm-dd-yy из исходника в русском календаре читается как другая дата."""
+        load(session)
+        result = matrix_service.matrix(session)
+        book = load_workbook(io.BytesIO(matrix_service.build_workbook(result)))
+        assert book["платежный календарь"]["B1"].number_format == "DD.MM.YYYY"
 
     def test_account_numbers_stay_text_in_the_workbook(self, session):
         """Число съело бы ведущие нули — счёт перестанет искаться поиском."""
