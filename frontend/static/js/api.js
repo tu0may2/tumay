@@ -184,6 +184,8 @@
 
     // Календарь по статьям и выгрузка по лицевым счетам
     calendarMatrix: (params) => request('/api/cash/matrix', { params }),
+    saveCalendarCell: (body) =>
+      request('/api/cash/matrix/cell', { method: 'PUT', body }),
     downloadMatrix: (params) => download('/api/cash/matrix/download', { params }),
     ledgerSheet: (onDate) => request('/api/cash/ledger', { params: { on_date: onDate } }),
     ledgerRules: () => request('/api/cash/ledger/rules'),

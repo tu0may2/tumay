@@ -2463,6 +2463,19 @@
   // Календарь по статьям и выгрузка по лицевым счетам
   // ------------------------------------------------------------------
 
+  /**
+   * Сумма в ячейке календаря.
+   *
+   * Полное число, без «12,3 млн»: календарь сверяют с выпиской, а сокращённая
+   * запись сравнение делает невозможным. Копейки показываем только когда они
+   * есть: круглые суммы читаются проще без хвоста «,00», но вписанные вручную
+   * 4 500 000,50 обязаны выглядеть именно так, а не превратиться в 4 500 001 —
+   * увидеть в ячейке не то, что ввёл, хуже, чем лишняя пара знаков.
+   */
+  function matrixMoney(value) {
+    return fmt.num(value, Number.isInteger(value) ? 0 : 2);
+  }
+
   /** Параметры окна дат календаря: пустые поля означают «как загружено». */
   function matrixParams() {
     return {
@@ -2474,9 +2487,13 @@
   }
 
   /** Календарь казначейства: статьи слева, дни справа. */
-  async function renderMatrix() {
+  async function renderMatrix({ refocus = null } = {}) {
     const container = $('#matrix-table');
-    loading(container);
+    // Пересборка после записи суммы не должна сбрасывать прокрутку и фокус
+    const scroll = refocus
+      ? { left: container.scrollLeft, top: container.scrollTop }
+      : null;
+    if (!refocus) loading(container);
 
     try {
       const result = await api.calendarMatrix(matrixParams());
@@ -2493,10 +2510,13 @@
 
       const hint = $('#matrix-hint');
       if (hint) {
-        hint.innerHTML = result.loaded_days
-          ? `Загружено дней: ${result.loaded_days}` +
+        const parts = [];
+        if (result.loaded_days) parts.push(`загружено дней: ${result.loaded_days}`);
+        if (result.typed_days) parts.push(`вписано вручную: ${result.typed_days}`);
+        hint.innerHTML = parts.length
+          ? parts.join(', ') +
             (result.empty_days
-              ? ` <span class="down">, без выгрузки ${result.empty_days}</span>`
+              ? ` <span class="down">· пустых ${result.empty_days}</span>`
               : '')
           : '<span class="dim">Выгрузки ещё не загружены</span>';
       }
@@ -2542,16 +2562,38 @@
         if (row.running) classes.push('matrix__running');
         if (row.fill === 'manual') classes.push('matrix__manual');
 
+        // Что под ручным вводом дала выгрузка — по номеру дня
+        const beneath = {};
+        (row.manual || []).forEach((day, position) => {
+          beneath[day] = (row.beneath || [])[position];
+        });
+        const typed = new Set(row.manual || []);
+
         const cells = row.values.map((value, index) => {
           const dayClasses = ['num', 'matrix__day'];
           if (result.days[index].weekend) dayClasses.push('matrix__day--weekend');
-          if (value === null) return `<td class="${dayClasses.join(' ')}"></td>`;
+
+          let attrs = '';
+          if (row.editable) {
+            dayClasses.push('matrix__editable');
+            attrs = ` data-row="${fmt.esc(row.code)}"` +
+              ` data-day="${result.days[index].date}"` +
+              ` data-value="${value === null ? '' : value}" tabindex="0"`;
+          }
+          if (typed.has(index)) {
+            dayClasses.push('matrix__typed');
+            const under = beneath[index];
+            const note = under === null || under === undefined
+              ? 'Вписано вручную'
+              : `Вписано вручную. По выгрузке было ${fmt.num(under, 2)}`;
+            attrs += ` title="${fmt.esc(note)}"`;
+          }
+
+          if (value === null) return `<td class="${dayClasses.join(' ')}"${attrs}></td>`;
           const trend = row.code === 'day_net' || row.code === 'cumulative'
             ? fmt.trendClass(value) : '';
-          // Полное число, без «12,3 млн»: календарь сверяют с выпиской, а
-          // сокращённая запись сравнение делает невозможным
-          return `<td class="${dayClasses.join(' ')}">` +
-            `<span class="${trend}">${fmt.num(value, 0)}</span></td>`;
+          return `<td class="${dayClasses.join(' ')}"${attrs}>` +
+            `<span class="${trend}">${matrixMoney(value)}</span></td>`;
         }).join('');
 
         const hintText = row.hint
@@ -2566,8 +2608,93 @@
       container.innerHTML =
         `<table class="matrix"><thead><tr>${head}</tr></thead>` +
         `<tbody>${body.join('')}</tbody></table>`;
+
+      // Прокрутку возвращаем на место: пересборка таблицы после каждой
+      // записанной суммы иначе отбрасывала бы к началу января
+      if (scroll) {
+        container.scrollLeft = scroll.left;
+        container.scrollTop = scroll.top;
+      }
+      if (refocus) {
+        const cell = container.querySelector(
+          `td[data-row="${refocus.row}"][data-day="${refocus.day}"]`
+        );
+        if (cell) cell.focus();
+      }
     } catch (error) {
       failure(container, error);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Ввод сумм прямо в календарь
+  // ------------------------------------------------------------------
+
+  /** Открыть ячейку на правку. */
+  function editCell(cell) {
+    if (!cell || cell.querySelector('input')) return;
+
+    const previous = cell.innerHTML;
+    const raw = cell.dataset.value || '';
+    cell.innerHTML =
+      `<input class="matrix__input" inputmode="decimal" value="${fmt.esc(raw)}">`;
+    const input = cell.querySelector('input');
+    input.focus();
+    input.select();
+
+    let done = false;
+    const cancel = () => {
+      if (done) return;
+      done = true;
+      cell.innerHTML = previous;
+    };
+    const commit = () => {
+      if (done) return;
+      done = true;
+      const text = input.value;
+      // Не изменилось — не тревожим сервер и не пересобираем таблицу
+      if (text.trim() === raw.trim()) {
+        cell.innerHTML = previous;
+        return;
+      }
+      saveCell(cell, text, previous);
+    };
+
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') { event.preventDefault(); commit(); }
+      else if (event.key === 'Escape') { event.preventDefault(); cancel(); }
+    });
+    input.addEventListener('blur', commit);
+  }
+
+  /**
+   * Записать вписанную сумму.
+   * Пустая строка стирает ввод и возвращает ячейку к тому, что дала выгрузка.
+   */
+  async function saveCell(cell, text, previous) {
+    const trimmed = String(text).trim();
+    let amount = null;
+    if (trimmed !== '') {
+      // Пробелы-разделители разрядов и десятичная запятая — как в Excel
+      const parsed = Number(trimmed.replace(/[\s ]/g, '').replace(',', '.'));
+      if (!isFinite(parsed)) {
+        toast('Не похоже на число', true);
+        cell.innerHTML = previous;
+        return;
+      }
+      amount = parsed;
+    }
+
+    const row = cell.dataset.row;
+    const day = cell.dataset.day;
+    try {
+      await api.saveCalendarCell({ entry_date: day, row_code: row, amount });
+      // Итоги, сальдо и накопительный остаток меняются вслед за ячейкой,
+      // поэтому перерисовываем таблицу целиком, а не одну клетку
+      await renderMatrix({ refocus: { row, day } });
+    } catch (error) {
+      toast(error.message, true);
+      cell.innerHTML = previous;
     }
   }
 
@@ -4792,7 +4919,28 @@
       api.downloadCalendar(state.portfolioName, state.cashHorizon, 'xlsx')
     ));
     ['#matrix-from', '#matrix-to', '#matrix-only-loaded'].forEach((selector) => {
-      on(selector, 'change', renderMatrix);
+      on(selector, 'change', () => renderMatrix());
+    });
+
+    // Правка сумм прямо в календаре. Обработчик один на таблицу: ячеек в ней
+    // тысячи, и вешать слушатель на каждую — значит платить за это при каждой
+    // перерисовке
+    on('#matrix-table', 'click', (event) => {
+      const cell = event.target.closest('td.matrix__editable');
+      if (cell) editCell(cell);
+    });
+    on('#matrix-table', 'keydown', (event) => {
+      if (event.target.tagName === 'INPUT') return;
+      const cell = event.target.closest('td.matrix__editable');
+      if (!cell) return;
+      // Enter и F2 открывают ячейку — так же, как в Excel
+      if (event.key === 'Enter' || event.key === 'F2') {
+        event.preventDefault();
+        editCell(cell);
+      } else if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        saveCell(cell, '', cell.innerHTML);
+      }
     });
     on('#ledger-date', 'change', (event) => {
       state.ledgerDate = event.target.value || null;

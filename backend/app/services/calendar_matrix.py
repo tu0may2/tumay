@@ -34,7 +34,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import LedgerRow
+from ..models import CalendarEntry, LedgerRow
 
 #: Направление оборота: дебет счёта — деньги ушли, кредит — пришли
 DEBIT = "debit"
@@ -216,6 +216,18 @@ OUTFLOW_CODES: tuple[str, ...] = tuple(
     if row.section == SECTION_OUTFLOW and row.fill == FILL_LEDGER
 )
 
+#: Строки, которые считает сам терминал: вписать в них число нельзя, иначе
+#: «ИТОГО» перестало бы быть суммой своих статей и по календарю нельзя было бы
+#: проверить ни одну цифру
+COMPUTED_CODES: frozenset[str] = frozenset(
+    row.code for row in ARTICLE_ROWS if row.fill == FILL_COMPUTED
+)
+
+#: Строки, в которые можно вписать сумму руками
+EDITABLE_CODES: frozenset[str] = frozenset(
+    row.code for row in ARTICLE_ROWS if row.code not in COMPUTED_CODES
+)
+
 
 # ----------------------------------------------------------------------
 # Разноска лицевых счетов по статьям
@@ -362,20 +374,98 @@ def loaded_dates(session: Session) -> list[date]:
     return list(rows)
 
 
+def manual_entries(
+    session: Session,
+    *,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict[date, dict[str, float]]:
+    """Суммы, вписанные руками, по дням и статьям."""
+    statement = select(CalendarEntry)
+    if date_from is not None:
+        statement = statement.where(CalendarEntry.entry_date >= date_from)
+    if date_to is not None:
+        statement = statement.where(CalendarEntry.entry_date <= date_to)
+
+    result: dict[date, dict[str, float]] = defaultdict(dict)
+    for entry in session.execute(statement).scalars():
+        result[entry.entry_date][entry.row_code] = entry.amount
+    return dict(result)
+
+
+def save_entry(
+    session: Session,
+    *,
+    entry_date: date,
+    row_code: str,
+    amount: float | None,
+    comment: str | None = None,
+    author: str | None = None,
+) -> dict[str, Any]:
+    """Вписать сумму в ячейку календаря. ``None`` стирает ввод.
+
+    Стирание возвращает ячейку к тому, что дала выгрузка, а не обнуляет её:
+    пустая ячейка и ноль — разные утверждения, и ввод не должен уметь
+    навсегда закрыть собой факт.
+    """
+    if row_code not in EDITABLE_CODES:
+        raise ValueError(
+            f"В строку «{ROW_BY_CODE[row_code].title}» вписать нельзя: она считается"
+            if row_code in ROW_BY_CODE
+            else "Такой строки в календаре нет"
+        )
+
+    record = session.execute(
+        select(CalendarEntry).where(
+            CalendarEntry.entry_date == entry_date,
+            CalendarEntry.row_code == row_code,
+        )
+    ).scalar_one_or_none()
+
+    if amount is None:
+        if record is not None:
+            session.delete(record)
+            session.commit()
+        return {"entry_date": entry_date, "row_code": row_code, "amount": None}
+
+    if record is None:
+        record = CalendarEntry(entry_date=entry_date, row_code=row_code, amount=0.0)
+        session.add(record)
+    record.amount = round(float(amount), 2)
+    record.comment = comment
+    record.author = author
+    session.commit()
+
+    return {
+        "entry_date": entry_date,
+        "row_code": row_code,
+        "amount": record.amount,
+        "row_title": ROW_BY_CODE[row_code].title,
+    }
+
+
 def _blank_column() -> dict[str, float | None]:
     return {row.code: None for row in ARTICLE_ROWS}
 
 
-def _fill_day(entries: Sequence[LedgerRow]) -> dict[str, float | None]:
-    """Свести выгрузку одного дня в колонку календаря.
+def _fill_day(
+    entries: Sequence[LedgerRow], manual: dict[str, float] | None = None
+) -> tuple[dict[str, float | None], dict[str, float | None]]:
+    """Свести день календаря: выгрузка плюс вписанные руками суммы.
 
-    День без выгрузки остаётся пустым целиком, а не нулевым: ноль в статье
-    означает «оборота не было», и подставлять его там, где данных просто нет,
-    значит утверждать то, чего мы не знаем.
+    Возвращает колонку показываемых значений и колонку того, что дала одна
+    выгрузка. Вторая нужна, чтобы у ячейки с ручным вводом было видно
+    перекрытое значение: иначе вписанная сумма молча прячет факт, прошедший
+    по счетам, и разойтись с выпиской можно было бы, ничего не заметив.
+
+    День без выгрузки и без ввода остаётся пустым целиком, а не нулевым: ноль
+    в статье означает «оборота не было», и подставлять его там, где данных
+    просто нет, значит утверждать то, чего мы не знаем.
     """
     column: dict[str, float | None] = _blank_column()
-    if not entries:
-        return column
+    manual = manual or {}
+    if not entries and not manual:
+        return column, _blank_column()
 
     buckets: dict[str, float] = defaultdict(float)
     opening = 0.0
@@ -417,12 +507,21 @@ def _fill_day(entries: Sequence[LedgerRow]) -> dict[str, float | None]:
     for code, value in client.items():
         column[code] = round(value, 2)
 
-    inflow = sum(buckets.get(code, 0.0) for code in INFLOW_CODES)
-    outflow = sum(buckets.get(code, 0.0) for code in OUTFLOW_CODES)
+    # Что дала одна выгрузка — запоминаем до наложения ручного ввода
+    from_ledger = dict(column)
+
+    # Вписанное руками перекрывает вычисленное: последнее слово за человеком,
+    # он же видит перекрытую сумму в подсказке и может стереть свой ввод
+    for code, value in manual.items():
+        if code in EDITABLE_CODES:
+            column[code] = round(value, 2)
+
+    inflow = sum(column.get(code) or 0.0 for code in INFLOW_CODES)
+    outflow = sum(column.get(code) or 0.0 for code in OUTFLOW_CODES)
     column["in_total"] = round(inflow, 2)
     column["out_total"] = round(outflow, 2)
     column["day_net"] = round(inflow - outflow, 2)
-    return column
+    return column, from_ledger
 
 
 def matrix(
@@ -434,22 +533,25 @@ def matrix(
 ) -> dict[str, Any]:
     """Календарь как таблица: строки — статьи, столбцы — дни.
 
-    ``only_loaded`` показывает лишь дни, на которые есть выгрузка. По
-    умолчанию колонки идут подряд, включая пустые: разрыв в датах — это
-    сообщение («за среду выгрузку не загрузили»), а не то, что стоит прятать.
+    ``only_loaded`` показывает лишь дни, на которые есть выгрузка или ручной
+    ввод. По умолчанию колонки идут подряд, включая пустые: разрыв в датах —
+    это сообщение («за среду выгрузку не загрузили»), а не то, что стоит
+    прятать.
     """
     loaded = loaded_dates(session)
+    manual = manual_entries(session)
 
+    known = sorted(set(loaded) | set(manual))
     if date_from is None:
-        date_from = loaded[0] if loaded else date.today()
+        date_from = known[0] if known else date.today()
     if date_to is None:
-        date_to = loaded[-1] if loaded else date_from
+        date_to = known[-1] if known else date_from
 
     if date_to < date_from:
         date_from, date_to = date_to, date_from
 
     if only_loaded:
-        days = [day for day in loaded if date_from <= day <= date_to]
+        days = [day for day in known if date_from <= day <= date_to]
     else:
         span = (date_to - date_from).days
         days = [date_from + timedelta(days=offset) for offset in range(span + 1)]
@@ -465,18 +567,24 @@ def matrix(
         by_day[entry.load_date].append(entry)
 
     columns: dict[date, dict[str, float | None]] = {}
+    ledger_columns: dict[date, dict[str, float | None]] = {}
     for day in days:
-        columns[day] = _fill_day(by_day.get(day, []))
+        columns[day], ledger_columns[day] = _fill_day(
+            by_day.get(day, []), manual.get(day)
+        )
 
     # Накопительное сальдо тянется через все показанные дни: без него не видно,
-    # что три спокойных дня подряд всё равно съедают остаток
+    # что три спокойных дня подряд всё равно съедают остаток. Идёт по дням,
+    # про которые хоть что-то известно, — вписанный вручную план будущего
+    # платежа обязан двигать остаток, иначе разрыв не увидеть заранее
+    filled = {day for day in days if day in by_day or day in manual}
     running: float | None = None
     for day in days:
-        if day not in by_day:
+        if day not in filled:
             continue
         column = columns[day]
         if running is None:
-            # Отсчёт ведём от корсчёта первого загруженного дня: сальдо само по
+            # Отсчёт ведём от корсчёта первого известного дня: сальдо само по
             # себе показывает только динамику, а вопрос всегда в том, хватит ли
             # денег — то есть в абсолютном остатке
             opening = column["opening"]
@@ -485,29 +593,45 @@ def matrix(
         column["cumulative"] = round(running, 2)
 
     loaded_set = set(by_day)
+
+    def _row(row: Row) -> dict[str, Any]:
+        if row.kind != KIND_ARTICLE:
+            # У заголовка и пустой строки сумм нет, но пустые списки отдаём
+            # всё равно: тогда клиенту не нужно знать заранее, у каких строк
+            # колонки есть, а у каких нет
+            return {**row.as_dict(), "values": [], "manual": [], "beneath": []}
+
+        editable = row.code in EDITABLE_CODES
+        typed = [
+            index for index, day in enumerate(days)
+            if editable and row.code in manual.get(day, {})
+        ]
+        return {
+            **row.as_dict(),
+            "values": [columns[day][row.code] for day in days],
+            "editable": editable,
+            #: Номера дней, где сумма вписана руками
+            "manual": typed,
+            #: Что под ручным вводом дала выгрузка — показываем в подсказке
+            "beneath": [ledger_columns[days[index]][row.code] for index in typed],
+        }
+
     return {
         "date_from": date_from,
         "date_to": date_to,
         "days": [
-            {"date": day, "loaded": day in loaded_set, "weekend": day.weekday() >= 5}
+            {
+                "date": day,
+                "loaded": day in loaded_set,
+                "typed": day in manual,
+                "weekend": day.weekday() >= 5,
+            }
             for day in days
         ],
-        "rows": [
-            {
-                **row.as_dict(),
-                # У заголовка и пустой строки сумм нет, но пустой список
-                # значений отдаём всё равно: тогда клиенту не нужно знать
-                # заранее, у каких строк колонки есть, а у каких нет
-                "values": (
-                    [columns[day][row.code] for day in days]
-                    if row.kind == KIND_ARTICLE
-                    else []
-                ),
-            }
-            for row in ROWS
-        ],
+        "rows": [_row(row) for row in ROWS],
         "loaded_days": len(loaded_set),
-        "empty_days": len(days) - len(loaded_set),
+        "typed_days": len({day for day in days if day in manual}),
+        "empty_days": len(days) - len(filled),
         "loaded_dates": [day for day in loaded if date_from <= day <= date_to],
     }
 
@@ -603,6 +727,8 @@ _MONEY = "# ##0.00"
 _TITLE_FONT = Font(bold=True, size=11)
 _PLAIN_FONT = Font(size=11)
 _DATE_FONT = Font(bold=True, size=8)
+#: Вписанное руками — курсивом, чтобы план не выдавал себя за факт
+_TYPED_FONT = Font(size=11, italic=True)
 
 #: Строки, у которых в файле нет рамки: аналитический блок под календарём
 #: отделён от него пустой строкой и рамкой не обведён
@@ -665,12 +791,15 @@ def build_workbook(
         elif row["running"]:
             label.fill = _FILL_RUNNING
 
+        typed = set(row.get("manual") or ())
         for index, value in enumerate(row["values"]):
             cell = sheet.cell(row=offset, column=index + 2)
             if value is not None:
                 cell.value = value
                 cell.number_format = _MONEY
-            cell.font = _PLAIN_FONT
+            # Вписанное руками набираем курсивом: в файле, ушедшем по почте,
+            # иначе не отличить план от того, что прошло по счетам
+            cell.font = _TYPED_FONT if index in typed else _PLAIN_FONT
             cell.border = border
             if row["running"]:
                 cell.fill = _FILL_RUNNING

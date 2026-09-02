@@ -24,6 +24,7 @@ from ..models import CashAccount, CashFlow, Placement
 from ..schemas import (
     CashAccountCreate,
     CashAccountRead,
+    CalendarCellSave,
     CashFlowCreate,
     CashFlowRead,
     LedgerImportApply,
@@ -147,6 +148,42 @@ def calendar_matrix(
     return matrix_service.matrix(
         session, date_from=date_from, date_to=date_to, only_loaded=only_loaded
     )
+
+
+@router.put("/matrix/cell", summary="Вписать сумму в календарь")
+def save_cell(
+    payload: CalendarCellSave,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> dict[str, Any]:
+    """Записать сумму в ячейку календаря или стереть введённую ранее.
+
+    Введённое перекрывает то, что дала выгрузка, но не затирает её: под
+    ячейкой остаётся исходная сумма, и стирание ввода к ней возвращает.
+    """
+    try:
+        result = matrix_service.save_entry(
+            session,
+            entry_date=payload.entry_date,
+            row_code=payload.row_code,
+            amount=payload.amount,
+            comment=payload.comment,
+            author=(user or {}).get("login"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    audit(
+        session,
+        user,
+        action="update",
+        entity="calendar_entry",
+        detail=(
+            f"{payload.row_code} на {payload.entry_date:%d.%m.%Y}: "
+            + ("стёрто" if payload.amount is None else f"{payload.amount:.2f}")
+        ),
+    )
+    return result
 
 
 @router.get("/matrix/download", summary="Выгрузить календарь по статьям")

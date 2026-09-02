@@ -269,6 +269,20 @@ class PortfolioImportApply(BaseModel):
     replace_existing: bool = False
 
 
+class CalendarCellSave(BaseModel):
+    """Сумма, вписанная в ячейку платёжного календаря.
+
+    ``amount = null`` стирает ввод и возвращает ячейку к тому, что дала
+    выгрузка. Ноль этого не делает: пустая ячейка и ноль — разные
+    утверждения, и «оборота не было» надо уметь сказать явно.
+    """
+
+    entry_date: date
+    row_code: str = Field(..., min_length=1, max_length=48)
+    amount: float | None = None
+    comment: str | None = Field(None, max_length=500)
+
+
 class LedgerImportApply(BaseModel):
     """Подтверждение загрузки выгрузки по лицевым счетам на дату.
 

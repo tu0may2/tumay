@@ -586,6 +586,38 @@ class LedgerRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class CalendarEntry(Base):
+    """Сумма, вписанная в платёжный календарь руками.
+
+    Хранится отдельно от выгрузки, а не поверх неё: выгрузка — это факт дня,
+    и затирать её вводом значило бы терять то, что в действительности прошло
+    по счетам. Введённое значение перекрывает вычисленное при показе, но
+    исходная сумма никуда не девается — её видно в подсказке ячейки, и
+    достаточно стереть ввод, чтобы вернуться к факту.
+
+    Главное назначение — будущие дни, по которым выгрузки ещё нет: план по
+    зарплате, налогам и погашениям вписывают заранее, иначе кассовый разрыв
+    обнаружится в день платежа.
+    """
+
+    __tablename__ = "calendar_entries"
+    __table_args__ = (
+        UniqueConstraint("entry_date", "row_code", name="uq_calendar_entry"),
+        Index("ix_calendar_entry_date", "entry_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    entry_date: Mapped[date] = mapped_column(Date, index=True)
+    #: Код строки календаря из calendar_matrix.ROWS
+    row_code: Mapped[str] = mapped_column(String(48), index=True)
+    amount: Mapped[float] = mapped_column(Float)
+    comment: Mapped[str | None] = mapped_column(Text)
+    author: Mapped[str | None] = mapped_column(String(64))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Placement(Base):
     """Размещение или привлечение денег: депозит, РЕПО, обратное РЕПО."""
 
