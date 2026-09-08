@@ -18,9 +18,12 @@ from ..schemas import (
     NotificationRuleCreate,
     NotificationRuleRead,
     PasswordChange,
+    RoleSave,
     UserCreate,
     UserRead,
+    UserRoleChange,
 )
+from ..services import access as access_service
 from ..services import auth as auth_service
 from ..services import ratelimit
 from ..services import history as history_service
@@ -99,7 +102,14 @@ def logout(
 
 @router.get("/auth/me", summary="Текущий пользователь")
 def me(user: dict = Depends(require_viewer)) -> dict[str, Any]:
-    return {**user, "role_title": auth_service.ROLE_TITLES.get(user["role"], user["role"])}
+    """Кто вошёл, с какими правами и какие вкладки ему показывать."""
+    return {
+        **user,
+        "role_title": user.get("role_title")
+        or auth_service.ROLE_TITLES.get(user["role"], user["role"]),
+        "level": auth_service.user_level(user),
+        "tabs": user.get("tabs") or list(access_service.TAB_CODES),
+    }
 
 
 @router.post("/auth/password", summary="Сменить пароль")
@@ -186,6 +196,118 @@ def disable_user(
     session.commit()
     audit(session, user, action="disable", entity="user", entity_id=user_id,
           detail=target.login)
+
+
+@router.patch("/users/{user_id}/role", response_model=UserRead, summary="Сменить роль")
+def change_role(
+    user_id: int,
+    payload: UserRoleChange,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_admin),
+) -> User:
+    """Перевести учётную запись на другую роль."""
+    target = session.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    if access_service.role_by_name(session, payload.role) is None:
+        raise HTTPException(status_code=422, detail="Роль не найдена")
+    if target.login == user.get("login") and payload.role != target.role:
+        # Снять роль с самого себя — верный способ потерять вход в настройки
+        raise HTTPException(
+            status_code=422, detail="Свою роль менять нельзя — попросите другого админа"
+        )
+
+    was, target.role = target.role, payload.role
+    # Права меняются сразу, а не после того, как человек сам перезайдёт
+    auth_service.drop_sessions(session, target.id)
+    session.commit()
+    session.refresh(target)
+    audit(session, user, action="update", entity="user", entity_id=user_id,
+          detail=f"{target.login}: роль {was} → {payload.role}")
+    return target
+
+
+@router.post("/users/{user_id}/enable", response_model=UserRead, summary="Вернуть доступ")
+def enable_user(
+    user_id: int,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_admin),
+) -> User:
+    """Включить отключённую учётную запись обратно."""
+    target = session.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    target.active = True
+    session.commit()
+    session.refresh(target)
+    audit(session, user, action="enable", entity="user", entity_id=user_id,
+          detail=target.login)
+    return target
+
+
+# ----------------------------------------------------------------------
+# Роли и состав вкладок
+# ----------------------------------------------------------------------
+@router.get("/roles", summary="Роли и их вкладки")
+def list_roles(
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_admin),
+) -> dict[str, Any]:
+    """Роли, доступные вкладки и справочник вкладок для выбора."""
+    return {
+        "roles": access_service.list_roles(session),
+        "tabs": access_service.tabs_catalog(),
+        "levels": [
+            {"code": code, "title": access_service.LEVEL_TITLES[code]}
+            for code in access_service.LEVELS
+        ],
+    }
+
+
+@router.put("/roles", summary="Завести или изменить роль")
+def save_role(
+    payload: RoleSave,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_admin),
+) -> dict[str, Any]:
+    """Записать роль. Состав вкладок администратора не меняется."""
+    try:
+        role = access_service.save_role(
+            session,
+            name=payload.name,
+            title=payload.title,
+            level=payload.level,
+            tabs=payload.tabs,
+            comment=payload.comment,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    # Вкладки меняются сразу у всех, кто на этой роли: иначе человек до
+    # следующего входа продолжал бы работать по прежним правам
+    for record in session.execute(
+        select(User).where(User.role == role.name)
+    ).scalars():
+        if record.login != user.get("login"):
+            auth_service.drop_sessions(session, record.id)
+
+    audit(session, user, action="update", entity="role", entity_id=role.id,
+          detail=f"{role.name}: {role.level}, вкладок {len(payload.tabs)}")
+    return {"roles": access_service.list_roles(session)}
+
+
+@router.delete("/roles/{name}", summary="Удалить роль")
+def delete_role(
+    name: str,
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_admin),
+) -> dict[str, Any]:
+    try:
+        access_service.delete_role(session, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit(session, user, action="delete", entity="role", detail=name)
+    return {"roles": access_service.list_roles(session)}
 
 
 @router.get("/audit", summary="Журнал изменений")

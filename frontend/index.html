@@ -48,6 +48,7 @@
     <button class="tab" data-view="imports" type="button">Импорт и сверка</button>
     <button class="tab" data-view="signals" type="button">Сигналы</button>
     <button class="tab" data-view="admin" type="button">Настройки</button>
+    <button class="tab" data-view="access" type="button">Доступы</button>
     <button class="tab" data-view="sources" type="button">Источники</button>
   </nav>
 
@@ -959,56 +960,6 @@ SU26238RMFS4
       <div class="grid grid--2">
         <article class="card">
           <header class="card__head">
-            <h2>Доступ</h2>
-            <span class="card__hint" id="auth-state"></span>
-          </header>
-          <div class="card__body" id="auth-info"></div>
-          <form class="filters" id="user-form" hidden>
-            <label class="field">
-              <span>Логин</span>
-              <input id="u-login" required minlength="2">
-            </label>
-            <label class="field">
-              <span>Пароль</span>
-              <input id="u-password" type="password" required minlength="6">
-            </label>
-            <label class="field">
-              <span>Имя</span>
-              <input id="u-name" placeholder="необязательно">
-            </label>
-            <label class="field">
-              <span>Роль</span>
-              <select id="u-role">
-                <option value="viewer">Просмотр</option>
-                <option value="trader">Сделки и лимиты</option>
-                <option value="admin">Администратор</option>
-              </select>
-            </label>
-            <div class="deal-form__actions">
-              <button class="btn btn--primary btn--sm" type="submit">Завести</button>
-              <span class="form-msg" id="user-msg"></span>
-            </div>
-          </form>
-          <div class="card__body table-wrap" id="users-table" style="max-height:280px"></div>
-
-          <form class="filters" id="password-form" hidden>
-            <label class="field">
-              <span>Чей пароль</span>
-              <input id="p-login" placeholder="свой — оставьте пустым">
-            </label>
-            <label class="field">
-              <span>Новый пароль</span>
-              <input id="p-password" type="password" required minlength="6" autocomplete="new-password">
-            </label>
-            <div class="deal-form__actions">
-              <button class="btn btn--sm" type="submit">Сменить пароль</button>
-              <span class="form-msg" id="password-msg"></span>
-            </div>
-          </form>
-        </article>
-
-        <article class="card">
-          <header class="card__head">
             <h2>Уведомления</h2>
             <div class="card__tools">
               <button class="btn btn--sm" id="rule-add" type="button">Добавить правило</button>
@@ -1041,21 +992,20 @@ SU26238RMFS4
           <div class="card__body table-wrap" id="rules-table" style="max-height:220px"></div>
           <p class="card__note">Подходит любой приёмник JSON: бот в Telegram, Slack, Mattermost или внутренний сервис. Текст события дублируется в поле <code>text</code>.</p>
         </article>
-      </div>
 
-      <div class="grid grid--2">
         <article class="card">
           <header class="card__head"><h2>Налоги в расчётах</h2></header>
           <div class="card__body" id="taxes-info"></div>
         </article>
-        <article class="card">
-          <header class="card__head">
-            <h2>События, требующие внимания</h2>
-            <span class="card__hint">то, что будет разослано</span>
-          </header>
-          <div class="card__body" id="events-list"></div>
-        </article>
       </div>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>События, требующие внимания</h2>
+          <span class="card__hint">то, что будет разослано</span>
+        </header>
+        <div class="card__body" id="events-list"></div>
+      </article>
 
       <article class="card">
         <header class="card__head">
@@ -1063,6 +1013,108 @@ SU26238RMFS4
           <span class="card__hint">кто и что менял</span>
         </header>
         <div class="card__body table-wrap" id="audit-table" style="max-height:420px"></div>
+      </article>
+    </section>
+
+    <!-- Доступы: учётные записи и состав вкладок по ролям -->
+    <section class="view" id="view-access">
+      <article class="card">
+        <header class="card__head">
+          <h2>Учётные записи</h2>
+          <div class="card__tools">
+            <span class="card__hint" id="auth-state"></span>
+            <button class="btn btn--sm btn--primary" id="user-add" type="button">Завести доступ</button>
+          </div>
+        </header>
+        <div class="card__body" id="auth-info"></div>
+
+        <form class="filters" id="user-form" hidden>
+          <label class="field">
+            <span>Логин</span>
+            <input id="u-login" required minlength="2" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Пароль</span>
+            <input id="u-password" type="password" required minlength="6" autocomplete="new-password">
+          </label>
+          <label class="field">
+            <span>Имя</span>
+            <input id="u-name" placeholder="необязательно">
+          </label>
+          <label class="field">
+            <span>Роль</span>
+            <select id="u-role"></select>
+          </label>
+          <div class="deal-form__actions">
+            <button class="btn btn--primary btn--sm" type="submit">Завести</button>
+            <button class="btn btn--sm" type="button" id="user-cancel">Отмена</button>
+            <span class="form-msg" id="user-msg"></span>
+          </div>
+        </form>
+
+        <div class="card__body table-wrap" id="users-table" style="max-height:360px"></div>
+
+        <form class="filters" id="password-form">
+          <label class="field">
+            <span>Чей пароль</span>
+            <input id="p-login" placeholder="свой — оставьте пустым">
+          </label>
+          <label class="field">
+            <span>Новый пароль</span>
+            <input id="p-password" type="password" required minlength="6" autocomplete="new-password">
+          </label>
+          <div class="deal-form__actions">
+            <button class="btn btn--sm" type="submit">Сменить пароль</button>
+            <span class="form-msg" id="password-msg"></span>
+          </div>
+        </form>
+        <p class="card__note">После смены пароля и после перевода на другую роль прежние входы закрываются: человек заходит заново и сразу с новыми правами. Учётные записи не удаляются, а отключаются — на них ссылается журнал изменений.</p>
+      </article>
+
+      <article class="card">
+        <header class="card__head">
+          <h2>Роли и вкладки</h2>
+          <div class="card__tools">
+            <span class="card__hint" id="roles-hint"></span>
+            <button class="btn btn--sm btn--primary" id="role-add" type="button">Новая роль</button>
+          </div>
+        </header>
+
+        <form class="filters" id="role-form" hidden>
+          <label class="field">
+            <span>Код роли</span>
+            <input id="ro-name" required minlength="2" placeholder="treasurer" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Название</span>
+            <input id="ro-title" required placeholder="Казначей">
+          </label>
+          <label class="field">
+            <span>Права на запись</span>
+            <select id="ro-level"></select>
+          </label>
+          <label class="field">
+            <span>Пояснение</span>
+            <input id="ro-comment" placeholder="необязательно">
+          </label>
+          <div class="field field--wide">
+            <span>Какие вкладки видит</span>
+            <div class="checks" id="ro-tabs"></div>
+            <div class="card__tools" style="margin-top:8px">
+              <button class="btn btn--sm" type="button" id="ro-all">Отметить все</button>
+              <button class="btn btn--sm" type="button" id="ro-none">Снять все</button>
+            </div>
+          </div>
+          <div class="deal-form__actions">
+            <button class="btn btn--primary btn--sm" type="submit">Сохранить роль</button>
+            <button class="btn btn--sm" type="button" id="role-cancel">Отмена</button>
+            <span class="form-msg" id="role-msg"></span>
+          </div>
+        </form>
+
+        <div class="card__body table-wrap" id="roles-table" style="max-height:420px"></div>
+        <p class="card__note">Права на запись и состав вкладок — разные вещи. Уровень отвечает за то, что человек может менять; список вкладок — за то, что ему показывать. Скрытая вкладка закрыта и на сервере: спрятать кнопку недостаточно, адрес запроса виден в браузере у любого.</p>
+        <p class="card__note">Администратору вкладки не отнимаются: иначе можно закрыть себе вход в этот самый раздел и открыть его обратно будет нечем. Роль, которую кто-то носит, удалить нельзя — сначала переведите людей на другую.</p>
       </article>
     </section>
 

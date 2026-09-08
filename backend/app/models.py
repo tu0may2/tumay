@@ -675,6 +675,34 @@ class PortfolioSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class Role(Base):
+    """Роль: что человеку можно менять и какие вкладки ему видны.
+
+    Права на запись и состав вкладок — разные вопросы, поэтому и хранятся
+    порознь. ``level`` отвечает за первое (смотреть, торговать, настраивать),
+    ``tabs`` — за второе. Иначе пришлось бы заводить отдельную роль под каждое
+    сочетание «может заводить сделки, но облигации ему не показываем».
+
+    Три встроенные роли (viewer, trader, admin) заводятся при первом запуске и
+    удалению не подлежат: на них ссылаются уже существующие учётные записи.
+    """
+
+    __tablename__ = "roles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    #: Код роли, он же значение ``User.role``
+    name: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(64))
+    #: Уровень прав на запись: viewer | trader | admin
+    level: Mapped[str] = mapped_column(String(16), default="viewer")
+    #: Коды вкладок через запятую; пустая строка — не видно ничего
+    tabs: Mapped[str] = mapped_column(Text, default="")
+    #: Встроенную роль нельзя удалить
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    comment: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 class User(Base):
     """Пользователь терминала."""
 
@@ -684,8 +712,8 @@ class User(Base):
     login: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     full_name: Mapped[str | None] = mapped_column(String(128))
     password_hash: Mapped[str] = mapped_column(String(256))
-    #: viewer | trader | admin
-    role: Mapped[str] = mapped_column(String(16), default="viewer", index=True)
+    #: Код роли из таблицы ролей: viewer | trader | admin или заведённая своя
+    role: Mapped[str] = mapped_column(String(32), default="viewer", index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     last_login: Mapped[datetime | None] = mapped_column(DateTime)

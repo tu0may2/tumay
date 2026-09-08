@@ -16,13 +16,14 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Any
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_session
 from ..models import AuditRecord, Session_, User
+from . import access
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,9 @@ def create_user(
     session: Session, *, login: str, password: str, role: str = "viewer",
     full_name: str | None = None,
 ) -> User:
-    if role not in ROLES:
+    # Роль ищем в справочнике, а не в списке из трёх: ролей теперь столько,
+    # сколько завело казначейство
+    if role not in ROLES and access.role_by_name(session, role) is None:
         raise ValueError(f"Неизвестная роль: {role}")
     user = User(
         login=login.strip().lower(),
@@ -142,11 +145,16 @@ def login(session: Session, login_name: str, password: str) -> dict[str, Any]:
     )
     session.commit()
 
+    resolved = access.resolve(session, user.role)
     return {
         "token": token,
         "login": user.login,
         "full_name": user.full_name,
         "role": user.role,
+        "role_title": resolved["title"],
+        "level": resolved["level"],
+        #: Какие вкладки показывать — интерфейс рисует только их
+        "tabs": resolved["tabs"],
         "expires_hours": settings.session_hours,
     }
 
@@ -199,7 +207,13 @@ def current_user(
     остальной код не ветвился.
     """
     if not settings.auth_enabled:
-        return {"login": "local", "role": "admin", "full_name": "Локальный запуск"}
+        return {
+            "login": "local",
+            "role": "admin",
+            "level": "admin",
+            "full_name": "Локальный запуск",
+            "tabs": list(access.TAB_CODES),
+        }
 
     if not x_auth_token:
         return None
@@ -217,11 +231,28 @@ def current_user(
     user = session.get(User, record.user_id)
     if user is None or not user.active:
         return None
-    return {"login": user.login, "role": user.role, "full_name": user.full_name}
+
+    # Уровень прав и состав вкладок берём из роли: имя роли само по себе
+    # больше ничего не значит, ролей может быть сколько угодно
+    resolved = access.resolve(session, user.role)
+    return {
+        "login": user.login,
+        "role": user.role,
+        "full_name": user.full_name,
+        "level": resolved["level"],
+        "tabs": resolved["tabs"],
+        "role_title": resolved["title"],
+    }
+
+
+def user_level(user: dict[str, Any]) -> str:
+    """Уровень прав на запись. Роль без уровня считаем просмотром."""
+    level = user.get("level") or user.get("role")
+    return level if level in ROLES else "viewer"
 
 
 def require_role(minimum: str):
-    """Зависимость: требовать роль не ниже указанной."""
+    """Зависимость: требовать уровень прав не ниже указанного."""
     threshold = ROLES.index(minimum)
 
     def _check(user: dict[str, Any] | None = Depends(current_user)) -> dict[str, Any]:
@@ -230,7 +261,7 @@ def require_role(minimum: str):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Требуется вход в систему",
             )
-        if ROLES.index(user["role"]) < threshold:
+        if ROLES.index(user_level(user)) < threshold:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Недостаточно прав: нужна роль «{ROLE_TITLES[minimum]}»",
@@ -238,6 +269,44 @@ def require_role(minimum: str):
         return user
 
     return _check
+
+
+def require_section(
+    request: Request, user: dict[str, Any] | None = Depends(current_user)
+) -> dict[str, Any] | None:
+    """Зависимость: вход плюс право на раздел, к которому относится путь.
+
+    Спрятать вкладку в интерфейсе — не защита: адрес запроса виден в любой
+    вкладке разработчика, и «этому человеку облигации не видны» должно
+    означать именно это. Поэтому скрытый раздел закрывается и здесь.
+    """
+    path = request.url.path
+    # Вход и проверка живости — до всякой авторизации, иначе войти нечем
+    if path.startswith(access.PUBLIC):
+        return user
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Требуется вход в систему",
+        )
+
+    tabs = user.get("tabs")
+    if tabs is None or access.path_allowed(path, tabs):
+        return user
+
+    sections = access.section_of(path) or frozenset()
+    titles = ", ".join(
+        f"«{access.TAB_TITLES[code]}»" for code in access.TAB_CODES if code in sections
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=(
+            f"Раздел не открыт для вашей роли: {titles}"
+            if titles
+            else "Раздел не открыт для вашей роли"
+        ),
+    )
 
 
 require_viewer = require_role("viewer")

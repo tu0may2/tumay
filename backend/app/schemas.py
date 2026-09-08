@@ -333,8 +333,30 @@ class LoginRequest(BaseModel):
 class UserCreate(BaseModel):
     login: str = Field(..., min_length=2, max_length=64)
     password: str = Field(..., min_length=6)
-    role: Literal["viewer", "trader", "admin"] = "viewer"
+    #: Код роли из справочника, а не один из трёх: ролей столько, сколько
+    #: завело казначейство. Существование проверяется при создании
+    role: str = Field("viewer", min_length=1, max_length=32)
     full_name: str | None = Field(None, max_length=128)
+
+
+class RoleSave(BaseModel):
+    """Роль: уровень прав на запись и список видимых вкладок.
+
+    Это два разных вопроса, поэтому и поля разные. Иначе под каждое сочетание
+    «сделки заводит, но облигации ему не нужны» пришлось бы плодить роли.
+    """
+
+    name: str = Field(..., min_length=2, max_length=32, description="Код роли")
+    title: str = Field(..., min_length=1, max_length=64, description="Как называется")
+    level: Literal["viewer", "trader", "admin"] = "viewer"
+    tabs: list[str] = Field(default_factory=list, max_length=64)
+    comment: str | None = Field(None, max_length=500)
+
+
+class UserRoleChange(BaseModel):
+    """Перевод учётной записи на другую роль."""
+
+    role: str = Field(..., min_length=1, max_length=32)
 
 
 class PasswordChange(BaseModel):

@@ -14,11 +14,13 @@
 """
 from fastapi import APIRouter, Depends
 
-from ..services.auth import require_viewer
+from ..services.auth import require_section
 from . import admin, bonds, cash, export, imports, market, portfolio, ratios, system, treasury
 
-#: Минимум для любого обращения: роли выше запрашиваются в самих обработчиках
-_authenticated = [Depends(require_viewer)]
+#: Минимум для любого обращения: вход плюс право на раздел, к которому
+#: относится путь. Уровень прав на запись (сделки, настройки) запрашивается
+#: отдельно в самих обработчиках.
+_authenticated = [Depends(require_section)]
 
 api_router = APIRouter()
 api_router.include_router(market.router, dependencies=_authenticated)
@@ -29,8 +31,10 @@ api_router.include_router(export.router, dependencies=_authenticated)
 api_router.include_router(imports.router, dependencies=_authenticated)
 api_router.include_router(treasury.router, dependencies=_authenticated)
 api_router.include_router(ratios.router, dependencies=_authenticated)
-# Вход и состояние сервиса: защита проставлена внутри, поштучно
-api_router.include_router(system.router)
-api_router.include_router(admin.router)
+# Вход и состояние сервиса. Проверка раздела пропускает /api/auth и
+# /api/health до всякой авторизации — иначе войти было бы нечем, — а роль
+# для записи по-прежнему запрашивается в самих обработчиках
+api_router.include_router(system.router, dependencies=_authenticated)
+api_router.include_router(admin.router, dependencies=_authenticated)
 
 __all__ = ["api_router"]

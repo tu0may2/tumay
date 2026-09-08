@@ -210,6 +210,15 @@
     createPlacement: (body) => request('/api/cash/placements', { method: 'POST', body }),
     deletePlacement: (id) => request(`/api/cash/placements/${id}`, { method: 'DELETE' }),
 
+    // Доступы: учётные записи и роли
+    roles: () => request('/api/roles'),
+    saveRole: (body) => request('/api/roles', { method: 'PUT', body }),
+    deleteRole: (name) =>
+      request(`/api/roles/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    changeUserRole: (id, role) =>
+      request(`/api/users/${id}/role`, { method: 'PATCH', body: { role } }),
+    enableUser: (id) => request(`/api/users/${id}/enable`, { method: 'POST' }),
+
     // Импорт и сверка
     importColumns: () => request('/api/import/columns'),
     importPreview: (file, portfolio) => {
