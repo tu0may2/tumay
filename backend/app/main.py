@@ -16,6 +16,7 @@ from . import __version__
 from .api import api_router
 from .config import settings
 from .db import init_db, session_scope
+from .services.access import ensure_builtin_roles
 from .services.auth import ensure_admin
 from .services.collector import collector
 from .services.scheduler import scheduler
@@ -33,10 +34,13 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Хранилище готово: %s", settings.database_url)
 
-    if settings.auth_enabled:
-        # Пароль администратора печатается в журнал ровно один раз — при
-        # создании учётной записи; хранится только его хеш
-        with session_scope() as session:
+    # Справочник ролей нужен всегда: по нему решается, какие вкладки
+    # показывать, даже когда вход отключён и роль одна
+    with session_scope() as session:
+        ensure_builtin_roles(session)
+        if settings.auth_enabled:
+            # Пароль администратора печатается в журнал ровно один раз — при
+            # создании учётной записи; хранится только его хеш
             ensure_admin(session)
 
     if settings.collect_on_startup:

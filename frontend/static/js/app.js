@@ -35,6 +35,10 @@
     ledgerPreview: null,
     historyDays: 365,
     accounts: [],
+    // Роли, справочник вкладок и уровней прав — вкладка «Доступы»
+    roles: [],
+    tabCatalog: [],
+    levels: [],
     importDeals: [],
     authEnabled: false,
     user: null,
@@ -3795,17 +3799,199 @@
             .join('')
         : '<div class="empty">Событий нет — рассылать нечего</div>';
 
-      // Пользователи, правила и журнал доступны только администратору:
-      // при роли ниже сервер ответит 403, и это не ошибка интерфейса
-      await Promise.all([renderUsers(), renderRules(), renderAudit()]);
+      // Правила и журнал доступны только администратору: при роли ниже
+      // сервер ответит 403, и это не ошибка интерфейса
+      await Promise.all([renderRules(), renderAudit()]);
     } catch (error) {
       failure(info, error);
     }
   }
 
+  // ------------------------------------------------------------------
+  // Доступы: учётные записи и состав вкладок по ролям
+  // ------------------------------------------------------------------
+  async function renderAccess() {
+    const info = $('#auth-info');
+    loading(info);
+    try {
+      const mode = await api.authMode();
+      $('#auth-state').innerHTML = mode.auth_enabled
+        ? '<span class="badge badge--up">вход включён</span>'
+        : '<span class="badge badge--warn">вход выключен</span>';
+      info.innerHTML = `<p class="card__note">${fmt.esc(mode.note)}</p>`;
+    } catch (error) {
+      failure(info, error);
+    }
+    // Роли грузим первыми: по ним заполняется выбор роли в форме доступа
+    await renderRoles();
+    await renderUsers();
+  }
+
+  /** Роли, их права и состав вкладок. */
+  async function renderRoles() {
+    const container = $('#roles-table');
+    try {
+      const data = await api.roles();
+      state.roles = data.roles;
+      state.tabCatalog = data.tabs;
+      state.levels = data.levels;
+
+      fillRoleControls();
+
+      $('#roles-hint').textContent =
+        `${data.roles.length} ${fmt.plural(data.roles.length, 'роль', 'роли', 'ролей')}`;
+
+      renderTable(container, [
+        {
+          title: 'Роль',
+          render: (row) => `<div class="sec">
+            <span class="sec__code">${fmt.esc(row.title)}</span>
+            <span class="sec__name">${fmt.esc(row.name)}${row.comment ? ' · ' + fmt.esc(row.comment) : ''}</span>
+          </div>`,
+        },
+        {
+          title: 'Права',
+          render: (row) => `<span class="badge">${fmt.esc(row.level_title)}</span>`,
+        },
+        {
+          title: 'Вкладки',
+          render: (row) => {
+            if (row.locked) return '<span class="dim">все, отнять нельзя</span>';
+            if (!row.tabs.length) return '<span class="down">ни одной</span>';
+            if (row.tabs.length === (state.tabCatalog || []).length) {
+              return '<span class="dim">все</span>';
+            }
+            return row.tabs
+              .map((code) => `<span class="badge">${fmt.esc(tabTitle(code))}</span>`)
+              .join(' ');
+          },
+        },
+        {
+          title: 'Людей', className: 'num',
+          render: (row) => (row.users ? String(row.users) : '<span class="dim">—</span>'),
+        },
+        {
+          title: '', className: 'num',
+          render: (row) => {
+            const edit = `<button class="btn btn--sm" data-edit-role="${fmt.esc(row.name)}">Изменить</button>`;
+            // Встроенную роль не удаляем: на неё ссылаются заведённые учётки
+            const drop = row.builtin
+              ? ''
+              : ` <button class="btn btn--ghost" data-drop-role="${fmt.esc(row.name)}" title="Удалить роль">×</button>`;
+            return edit + drop;
+          },
+        },
+      ], data.roles, { emptyMessage: 'Ролей нет' });
+
+      container.querySelectorAll('[data-edit-role]').forEach((button) => {
+        button.addEventListener('click', () => editRole(button.dataset.editRole));
+      });
+      container.querySelectorAll('[data-drop-role]').forEach((button) => {
+        button.addEventListener('click', () => dropRole(button.dataset.dropRole));
+      });
+    } catch (error) {
+      $('#role-form').hidden = true;
+      denied(container, error);
+    }
+  }
+
+  function tabTitle(code) {
+    const found = (state.tabCatalog || []).find((item) => item.code === code);
+    return found ? found.title : code;
+  }
+
+  /** Заполнить выпадающие списки и галочки вкладок по справочникам сервера. */
+  function fillRoleControls() {
+    const level = $('#ro-level');
+    if (level && !level.options.length) {
+      level.innerHTML = (state.levels || [])
+        .map((item) => `<option value="${item.code}">${fmt.esc(item.title)}</option>`)
+        .join('');
+    }
+
+    const tabs = $('#ro-tabs');
+    if (tabs) {
+      tabs.innerHTML = (state.tabCatalog || [])
+        .map((item) => `<label><input type="checkbox" value="${item.code}"> ${fmt.esc(item.title)}</label>`)
+        .join('');
+    }
+
+    const role = $('#u-role');
+    if (role) {
+      const chosen = role.value;
+      role.innerHTML = (state.roles || [])
+        .map((item) => `<option value="${fmt.esc(item.name)}">${fmt.esc(item.title)}</option>`)
+        .join('');
+      if (chosen) role.value = chosen;
+    }
+  }
+
+  function openRoleForm(role) {
+    const form = $('#role-form');
+    form.hidden = false;
+    $('#role-msg').textContent = '';
+    // Код роли у существующей не меняем: он записан в учётных записях
+    $('#ro-name').value = role ? role.name : '';
+    $('#ro-name').readOnly = Boolean(role);
+    $('#ro-title').value = role ? role.title : '';
+    $('#ro-level').value = role ? role.level : 'viewer';
+    $('#ro-comment').value = role ? role.comment || '' : '';
+
+    const chosen = new Set(role ? role.tabs : (state.tabCatalog || []).map((t) => t.code));
+    $$('#ro-tabs input').forEach((box) => {
+      box.checked = chosen.has(box.value);
+      // У администратора состав вкладок не редактируется
+      box.disabled = Boolean(role && role.locked);
+    });
+    form.scrollIntoView({ block: 'nearest' });
+  }
+
+  function editRole(name) {
+    const role = (state.roles || []).find((item) => item.name === name);
+    if (role) openRoleForm(role);
+  }
+
+  async function dropRole(name) {
+    if (!window.confirm(`Удалить роль «${name}»?`)) return;
+    try {
+      await api.deleteRole(name);
+      toast('Роль удалена');
+      renderRoles();
+    } catch (error) {
+      toast(error.message, true);
+    }
+  }
+
+  async function submitRole(event) {
+    event.preventDefault();
+    const message = $('#role-msg');
+    try {
+      await api.saveRole({
+        name: $('#ro-name').value.trim(),
+        title: $('#ro-title').value.trim(),
+        level: $('#ro-level').value,
+        comment: $('#ro-comment').value.trim() || null,
+        tabs: $$('#ro-tabs input:checked').map((box) => box.value),
+      });
+      message.textContent = 'Роль сохранена';
+      message.className = 'form-msg form-msg--ok';
+      $('#role-form').hidden = true;
+      await renderRoles();
+      await renderUsers();
+      // Свои вкладки могли измениться вместе с ролью
+      await applyTabAccess();
+    } catch (error) {
+      message.textContent = error.message;
+      message.className = 'form-msg form-msg--err';
+    }
+  }
+
   function denied(container, error) {
     if (!container) return;
-    const forbidden = /Недостаточно прав|вход в систему/i.test(error.message || '');
+    // Отказ по правам — не поломка: показываем его текст как есть, без
+    // «не удалось загрузить», которое выглядит как сбой
+    const forbidden = /Недостаточно прав|вход в систему|не открыт для вашей роли/i
+      .test(error.message || '');
     container.innerHTML = `<div class="empty">${
       forbidden ? fmt.esc(error.message) : 'Не удалось загрузить: ' + fmt.esc(error.message)
     }</div>`;
@@ -3815,12 +4001,40 @@
     const container = $('#users-table');
     try {
       const users = await api.users();
-      $('#user-form').hidden = false;
+      $('#user-add').hidden = false;
       $('#password-form').hidden = false;
+
+      const roleOptions = (state.roles || [])
+        .map((role) => `<option value="${fmt.esc(role.name)}">${fmt.esc(role.title)}</option>`)
+        .join('');
+
       renderTable(container, [
-        { title: 'Логин', render: (row) => fmt.esc(row.login) },
+        { title: 'Логин', render: (row) => `<span class="sec__code">${fmt.esc(row.login)}</span>` },
         { title: 'Имя', render: (row) => `<span class="dim">${fmt.esc(row.full_name || '—')}</span>` },
-        { title: 'Роль', render: (row) => `<span class="badge">${ROLE_TITLES[row.role] || row.role}</span>` },
+        {
+          title: 'Роль',
+          render: (row) => {
+            const own = state.user && row.login === state.user.login;
+            // Свою роль менять нельзя: снять её с себя — верный способ
+            // потерять вход в этот самый раздел
+            if (own) {
+              return `<span class="badge">${fmt.esc(roleTitle(row.role))}</span>
+                <span class="dim"> это вы</span>`;
+            }
+            return `<select class="role-pick" data-user="${row.id}">${roleOptions}</select>`;
+          },
+        },
+        {
+          title: 'Вкладки',
+          render: (row) => {
+            const role = (state.roles || []).find((item) => item.name === row.role);
+            if (!role) return '<span class="down">роль не найдена</span>';
+            if (role.locked || role.tabs.length === (state.tabCatalog || []).length) {
+              return '<span class="dim">все</span>';
+            }
+            return `<span class="dim">${role.tabs.length} из ${(state.tabCatalog || []).length}</span>`;
+          },
+        },
         {
           title: 'Статус',
           render: (row) =>
@@ -3831,16 +4045,56 @@
         {
           title: '',
           className: 'num',
-          render: (row) => `<button class="btn btn--ghost" data-drop-user="${row.id}" title="Отключить доступ">×</button>`,
+          render: (row) => {
+            if (state.user && row.login === state.user.login) return '';
+            return row.active
+              ? `<button class="btn btn--ghost" data-drop-user="${row.id}" title="Отключить доступ">×</button>`
+              : `<button class="btn btn--sm" data-enable-user="${row.id}">Вернуть</button>`;
+          },
         },
       ], users, { emptyMessage: 'Пользователей нет' });
+
+      container.querySelectorAll('select.role-pick').forEach((select) => {
+        const user = users.find((item) => String(item.id) === select.dataset.user);
+        if (user) select.value = user.role;
+        select.addEventListener('change', () => changeUserRole(select));
+      });
+      container.querySelectorAll('[data-enable-user]').forEach((button) => {
+        button.addEventListener('click', async () => {
+          try {
+            await api.enableUser(button.dataset.enableUser);
+            toast('Доступ возвращён');
+            renderUsers();
+          } catch (error) {
+            toast(error.message, true);
+          }
+        });
+      });
       bindRemoval('#users-table', 'dropUser', api.disableUser, renderUsers, 'Доступ отключён');
     } catch (error) {
+      $('#user-add').hidden = true;
       $('#user-form').hidden = true;
       // Свой пароль меняет любой вошедший, поэтому форму оставляем —
       // прячем только если вход вообще выключен
       $('#password-form').hidden = !state.authEnabled;
       denied(container, error);
+    }
+  }
+
+  function roleTitle(name) {
+    const role = (state.roles || []).find((item) => item.name === name);
+    return role ? role.title : ROLE_TITLES[name] || name;
+  }
+
+  async function changeUserRole(select) {
+    const previous = select.dataset.previous || select.value;
+    try {
+      await api.changeUserRole(select.dataset.user, select.value);
+      toast('Роль изменена — прежние входы этого человека закрыты');
+      renderUsers();
+    } catch (error) {
+      toast(error.message, true);
+      select.value = previous;
     }
   }
 
@@ -3906,9 +4160,11 @@
         full_name: $('#u-name').value.trim() || null,
         role: $('#u-role').value,
       });
-      message.textContent = 'Пользователь заведён';
+      message.textContent = 'Доступ заведён';
       message.className = 'form-msg form-msg--ok';
       $('#user-form').reset();
+      $('#user-form').hidden = true;
+      fillRoleControls();
       renderUsers();
     } catch (error) {
       message.textContent = error.message;
@@ -4000,6 +4256,7 @@
       updateWhoami();
       // Данные грузились без токена и не пришли — начинаем заново
       state.loaded = {};
+      await applyTabAccess();
       await loadPortfolioNames();
       RENDERERS[state.view]();
     } catch (error) {
@@ -4025,10 +4282,41 @@
     if (badge) {
       badge.hidden = !enabled;
       if (enabled) {
-        badge.textContent = `${state.user.full_name || state.user.login} · ${ROLE_TITLES[state.user.role] || state.user.role}`;
+        const role = state.user.role_title || ROLE_TITLES[state.user.role] || state.user.role;
+        badge.textContent = `${state.user.full_name || state.user.login} · ${role}`;
       }
     }
     if (logout) logout.hidden = !enabled;
+  }
+
+  /**
+   * Показать только те вкладки, что открыты роли.
+   *
+   * Это удобство, а не защита: скрытый раздел закрыт и на сервере, поэтому
+   * попытка достучаться до него в обход интерфейса заканчивается отказом.
+   */
+  async function applyTabAccess() {
+    let allowed = state.user && state.user.tabs;
+    if (!allowed && state.authEnabled) {
+      try {
+        state.user = await api.me();
+        allowed = state.user.tabs;
+      } catch (error) { /* не вошли — вкладки покажет следующий вход */ }
+    }
+    // Роль без списка вкладок (вход выключен) видит терминал целиком
+    const visible = allowed ? new Set(allowed) : null;
+
+    $$('.tab').forEach((tab) => {
+      tab.hidden = Boolean(visible) && !visible.has(tab.dataset.view);
+    });
+
+    // Открытая вкладка могла только что закрыться — переходим на первую
+    // доступную, иначе человек остался бы на пустом экране
+    if (visible && state.view && !visible.has(state.view)) {
+      const first = $$('.tab').find((tab) => !tab.hidden);
+      if (first) switchView(first.dataset.view);
+    }
+    return visible;
   }
 
   /** Узнать режим доступа и, если нужно, попросить войти. */
@@ -4776,6 +5064,7 @@
     imports: renderImports,
     signals: renderSignals,
     admin: renderAdmin,
+    access: renderAccess,
     sources: renderSources,
   };
 
@@ -4991,6 +5280,23 @@
     // Настройки
     on('#user-form', 'submit', submitUser);
     on('#password-form', 'submit', submitPassword);
+
+    // Доступы: учётные записи и роли
+    on('#user-add', 'click', () => {
+      const form = $('#user-form');
+      form.hidden = !form.hidden;
+      if (!form.hidden) $('#u-login').focus();
+    });
+    on('#user-cancel', 'click', () => { $('#user-form').hidden = true; });
+    on('#role-add', 'click', () => openRoleForm(null));
+    on('#role-cancel', 'click', () => { $('#role-form').hidden = true; });
+    on('#role-form', 'submit', submitRole);
+    on('#ro-all', 'click', () => {
+      $$('#ro-tabs input').forEach((box) => { if (!box.disabled) box.checked = true; });
+    });
+    on('#ro-none', 'click', () => {
+      $$('#ro-tabs input').forEach((box) => { if (!box.disabled) box.checked = false; });
+    });
     on('#rule-add', 'click', () => {
       const form = $('#rule-form');
       form.hidden = !form.hidden;
@@ -5115,8 +5421,10 @@
 
     // Проверка доступа и список портфелей — после первой отрисовки, чтобы
     // интерфейс появлялся сразу, а не ждал ответа сервера
-    initAuth().then((allowed) => {
-      if (allowed) loadPortfolioNames();
+    initAuth().then(async (allowed) => {
+      if (!allowed) return;
+      await applyTabAccess();
+      loadPortfolioNames();
     });
   }
 

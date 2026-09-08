@@ -421,6 +421,19 @@ tbody tr.clickable { cursor: pointer; }
 .matrix input.matrix__input:focus { outline: none; }
 .matrix__hint { display: block; font-size: 10.5px; color: var(--text-mute); text-transform: none; letter-spacing: 0; }
 
+/* Выбор роли прямо в строке таблицы доступов */
+select.role-pick {
+  padding: 4px 8px;
+  font-size: 12px;
+  background: var(--bg-elev-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+select.role-pick:focus { outline: none; border-color: var(--accent); }
+/* Галочки вкладок в настройке роли: два-три столбца вместо длинной строки */
+#ro-tabs { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 14px; }
+
 .field--inline { flex-direction: row; align-items: center; gap: 7px; }
 .field--inline > span { text-transform: none; letter-spacing: 0; font-size: 12px; }
 .field--inline input, .field--inline select { padding: 5px 8px; font-size: 12px; }

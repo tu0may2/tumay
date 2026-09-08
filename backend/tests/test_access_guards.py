@@ -299,3 +299,131 @@ class TestExtraPasswords:
         assert guarded_client.post(
             "/api/auth/login", json={"login": "otkluchen", "password": "1234567"}
         ).status_code == 401
+
+
+class TestSectionAccess:
+    """Скрытая вкладка закрыта и по HTTP.
+
+    Спрятать кнопку — не защита: адрес запроса виден в любой вкладке
+    разработчика, и «этому человеку облигации не видны» обязано означать
+    именно это, а не «неудобно добраться».
+    """
+
+    def _restricted(self, client, tabs, *, login="uzkii", level="viewer"):
+        """Завести роль с заданными вкладками и войти под ней."""
+        from app.db import session_scope
+        from app.services import access
+        from app.services.auth import create_user
+
+        with session_scope() as session:
+            access.save_role(
+                session, name=f"role-{login}", title="Узкая роль",
+                level=level, tabs=tabs,
+            )
+            create_user(
+                session, login=login, password="parol-ogranichennyi",
+                role=f"role-{login}",
+            )
+        token = client.post(
+            "/api/auth/login",
+            json={"login": login, "password": "parol-ogranichennyi"},
+        ).json()["token"]
+        return {"X-Auth-Token": token}
+
+    def test_open_section_answers(self, guarded_client):
+        headers = self._restricted(guarded_client, ["calendar"], login="odin")
+        assert guarded_client.get("/api/cash/matrix", headers=headers).status_code == 200
+
+    def test_hidden_section_is_refused(self, guarded_client):
+        headers = self._restricted(guarded_client, ["calendar"], login="dva")
+        for path in (
+            "/api/bonds/analysis",
+            "/api/portfolio",
+            "/api/ratios",
+            "/api/instruments",
+            "/api/cash/flows",
+        ):
+            response = guarded_client.get(path, headers=headers)
+            assert response.status_code == 403, f"{path} открыт: {response.status_code}"
+
+    def test_refusal_names_the_section(self, guarded_client):
+        """Отказ должен объяснять, какой вкладки не хватает."""
+        headers = self._restricted(guarded_client, ["calendar"], login="tri")
+        detail = guarded_client.get("/api/bonds/analysis", headers=headers).json()["detail"]
+        assert "Облигации" in detail
+
+    def test_writing_into_a_hidden_section_is_refused(self, guarded_client):
+        """Иначе право на запись обходило бы состав вкладок."""
+        headers = self._restricted(
+            guarded_client, ["calendar"], login="chetyre", level="trader"
+        )
+        response = guarded_client.post(
+            "/api/cash/accounts", headers=headers,
+            json={"name": "Счёт", "currency": "RUB"},
+        )
+        assert response.status_code == 403
+
+    def test_shell_paths_survive_any_role(self, guarded_client):
+        """Без них шапка выглядит сломанной, а войти нельзя вовсе."""
+        headers = self._restricted(guarded_client, [], login="pyat")
+        for path in ("/api/auth/me", "/api/overview", "/api/portfolio/names"):
+            assert guarded_client.get(path, headers=headers).status_code == 200, path
+
+    def test_admin_reaches_everything(self, guarded_client):
+        token = guarded_client.post(
+            "/api/auth/login",
+            json={"login": "admin", "password": "parol-administratora"},
+        ).json()["token"]
+        headers = {"X-Auth-Token": token}
+        for path in ("/api/bonds/analysis", "/api/roles", "/api/users", "/api/audit"):
+            assert guarded_client.get(path, headers=headers).status_code == 200, path
+
+    def test_login_reports_the_tabs(self, guarded_client):
+        """Интерфейс рисует вкладки по этому списку."""
+        from app.db import session_scope
+        from app.services import access
+        from app.services.auth import create_user
+
+        with session_scope() as session:
+            access.save_role(
+                session, name="role-shest", title="Узкая", level="viewer",
+                tabs=["calendar", "cash"],
+            )
+            create_user(
+                session, login="shest", password="parol-ogranichennyi",
+                role="role-shest",
+            )
+        body = guarded_client.post(
+            "/api/auth/login",
+            json={"login": "shest", "password": "parol-ogranichennyi"},
+        ).json()
+        assert body["tabs"] == ["calendar", "cash"]
+        assert body["level"] == "viewer"
+
+    def test_narrowing_a_role_closes_running_sessions(self, guarded_client):
+        """Права меняются сразу, а не после того, как человек сам перезайдёт."""
+        headers = self._restricted(guarded_client, ["calendar", "bonds"], login="sem")
+        assert guarded_client.get("/api/bonds/filters", headers=headers).status_code == 200
+
+        admin = guarded_client.post(
+            "/api/auth/login",
+            json={"login": "admin", "password": "parol-administratora"},
+        ).json()["token"]
+        guarded_client.put(
+            "/api/roles",
+            headers={"X-Auth-Token": admin},
+            json={
+                "name": "role-sem", "title": "Узкая роль",
+                "level": "viewer", "tabs": ["calendar"],
+            },
+        )
+        assert guarded_client.get("/api/bonds/filters", headers=headers).status_code == 401
+
+    def test_role_management_needs_admin(self, guarded_client):
+        """Видеть вкладку «Доступы» мало — раздавать права может админ."""
+        from app.services import access
+
+        headers = self._restricted(
+            guarded_client, list(access.TAB_CODES), login="vosem", level="trader",
+        )
+        assert guarded_client.get("/api/roles", headers=headers).status_code == 403
