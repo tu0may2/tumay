@@ -10,7 +10,15 @@ Group=treasury
 WorkingDirectory=/opt/treasury/backend
 # .env в этой папке подхватывается автоматически (см. app/config.py) —
 # отдельно прокидывать TREASURY_AUTH_ENABLED и TREASURY_ADMIN_PASSWORD не нужно
-ExecStart=/opt/treasury/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+# --proxy-headers обязателен, когда снаружи HTTPS. Без него приложение
+# считает, что работает по http, и собственные перенаправления собирает с
+# этой схемой: запрос по https на адрес с косой чертой в конце уводил на
+# http://, то есть браузер переходил на открытый канал и уносил туда токен
+# сессии. --forwarded-allow-ips ограничивает доверие заголовкам одним
+# источником — тем самым nginx на 127.0.0.1, других у приложения и нет.
+ExecStart=/opt/treasury/backend/.venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port 8000 \
+    --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=5
 # Сервер переживает разрыв SSH-сессии и переживёт перезагрузку ВМ (см. enable ниже)

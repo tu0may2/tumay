@@ -392,3 +392,75 @@ class TestUploadBomb:
 
         with pytest.raises(uploads.UnsafeUpload, match="повреждён"):
             uploads.check_archive(b"PK\x03\x04" + b"musor" * 50)
+
+
+# ----------------------------------------------------------------------
+# Схема за обратным прокси
+# ----------------------------------------------------------------------
+@pytest.fixture()
+def proxied(tmp_path):
+    """Приложение за прокси, который снаружи говорит по HTTPS.
+
+    Оборачиваем тем же слоем, который включает uvicorn ключом
+    --proxy-headers: без него приложение заголовок X-Forwarded-Proto не
+    читает вовсе, и проверять было бы нечего.
+    """
+    import importlib
+
+    from fastapi.testclient import TestClient
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    from app.config import settings
+
+    previous = (
+        settings.auth_enabled, settings.database_url,
+        settings.collect_on_startup, settings.scheduler_enabled,
+    )
+    settings.auth_enabled = False
+    settings.database_url = f"sqlite:///{tmp_path / 'scheme.db'}"
+    settings.collect_on_startup = False
+    settings.scheduler_enabled = False
+
+    import app.db
+    import app.main
+
+    importlib.reload(app.db)
+    importlib.reload(app.main)
+
+    with TestClient(ProxyHeadersMiddleware(app.main.app, trusted_hosts="*")) as client:
+        yield client
+
+    (
+        settings.auth_enabled, settings.database_url,
+        settings.collect_on_startup, settings.scheduler_enabled,
+    ) = previous
+    importlib.reload(app.db)
+    importlib.reload(app.main)
+
+
+class TestSchemeIsNotDowngraded:
+    """За HTTPS-прокси приложение обязано собирать свои адреса с https://.
+
+    Иначе запрос по https на адрес с косой чертой в конце уводил браузер на
+    http:// — то есть на открытый канал, куда уходит и токен сессии.
+    """
+
+    def test_redirect_keeps_https(self, proxied):
+        response = proxied.get(
+            "/api/bonds/analysis/",
+            headers={"X-Forwarded-Proto": "https", "Host": "terminal.example.ru"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 307
+        location = response.headers["location"]
+        assert location.startswith("https://"), location
+
+    def test_hsts_is_set_behind_https(self, proxied):
+        """HSTS запрещает браузеру возвращаться на http самостоятельно."""
+        response = proxied.get("/api/health", headers={"X-Forwarded-Proto": "https"})
+        assert "max-age=" in response.headers.get("Strict-Transport-Security", "")
+
+    def test_hsts_is_absent_without_https(self, proxied):
+        """Выставленный по ошибке, он закроет доступ, пока нет сертификата."""
+        response = proxied.get("/api/health")
+        assert "Strict-Transport-Security" not in response.headers
