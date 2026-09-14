@@ -12,6 +12,7 @@ from ..db import get_session
 from ..schemas import ImportApply, PortfolioImportApply
 from ..services import importer as importer_service
 from ..services import portfolio_import as portfolio_import_service
+from ..services import uploads
 from ..services.auth import audit, require_trader
 
 router = APIRouter(prefix="/api/import", tags=["Импорт"])
@@ -30,6 +31,13 @@ async def _read_upload(file: UploadFile) -> bytes:
             status_code=413,
             detail=f"Файл больше {MAX_UPLOAD_BYTES // (1024 * 1024)} МБ",
         )
+    # Предела на размер загрузки мало: книга Excel — это zip, и двести
+    # килобайт разворачиваются в двести мегабайт. Смотрим в оглавление
+    # архива, пока под содержимое не выделена память
+    try:
+        uploads.check_archive(content)
+    except uploads.UnsafeUpload as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return content
 
 

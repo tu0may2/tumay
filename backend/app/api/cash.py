@@ -35,6 +35,7 @@ from ..services import calendar_matrix as matrix_service
 from ..services import cash as cash_service
 from ..services import ledger_import as ledger_service
 from ..services.tabular import to_csv, to_xlsx
+from ..services import uploads
 from ..services.auth import audit, require_trader, require_viewer
 
 router = APIRouter(prefix="/api/cash", tags=["Деньги"])
@@ -133,6 +134,13 @@ async def _read_upload(file: UploadFile) -> bytes:
             status_code=413,
             detail=f"Файл больше {MAX_LEDGER_BYTES // (1024 * 1024)} МБ",
         )
+    # Предела на размер загрузки мало: книга Excel — это zip, и двести
+    # килобайт разворачиваются в двести мегабайт. Смотрим в оглавление
+    # архива, пока под содержимое не выделена память
+    try:
+        uploads.check_archive(content)
+    except uploads.UnsafeUpload as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return content
 
 

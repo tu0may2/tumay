@@ -35,6 +35,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import CalendarEntry, LedgerRow
+from .tabular import defuse_formula
 
 #: Направление оборота: дебет счёта — деньги ушли, кредит — пришли
 DEBIT = "debit"
@@ -846,7 +847,11 @@ def _write_ledger_sheet(sheet: Any, ledger: dict[str, Any]) -> None:
                 cell.value = value
                 cell.number_format = _MONEY
             else:
-                # Номер счёта — текст: иначе Excel съест ведущие нули
-                cell.value = str(value)
+                # Номер счёта — текст: иначе Excel съест ведущие нули.
+                # Наименование счёта приходит из загруженной ведомости и
+                # может начинаться со знака равенства — тогда Excel посчитает
+                # его формулой, поэтому пропускаем через ту же защиту, что и
+                # остальные выгрузки
+                cell.value = defuse_formula(str(value))
 
     sheet.freeze_panes = "A4"

@@ -121,13 +121,28 @@ def _accepts(password: str, user: User) -> bool:
     )
 
 
+#: Хеш несуществующего пароля. Нужен, чтобы проверка занимала одинаковое
+#: время независимо от того, есть такой логин или нет — см. login().
+_DUMMY_HASH = hash_password(secrets.token_urlsafe(32))
+
+
 def login(session: Session, login_name: str, password: str) -> dict[str, Any]:
     """Проверить пару логин-пароль и выдать токен сессии."""
     user = session.execute(
         select(User).where(User.login == login_name.strip().lower())
     ).scalar_one_or_none()
 
-    if user is None or not user.active or not _accepts(password, user):
+    if user is None or not user.active:
+        # Считаем хеш вхолостую и только потом отказываем. Без этого ответ по
+        # несуществующему логину приходит мгновенно, а по существующему —
+        # через десятки миллисекунд, которые уходят на PBKDF2. Разница
+        # трёхсоткратная и хорошо видна снаружи: она позволяет перебором
+        # выяснить, какие учётные записи в терминале заведены, и дальше
+        # подбирать пароль уже прицельно
+        verify_password(password, _DUMMY_HASH)
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+
+    if not _accepts(password, user):
         # Не уточняем, что именно неверно: это подсказка для подбора
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
 

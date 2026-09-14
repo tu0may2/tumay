@@ -1053,7 +1053,9 @@
         { title: 'Оферта', sortBy: 'years_to_offer', render: (row) => (row.has_offer ? `<span class="badge badge--warn">${row.offer_date ? fmt.date(row.offer_date) : 'есть'}</span>` : '<span class="dim">нет</span>') },
         { title: 'Оборот, ₽', className: 'num', render: (row) => fmt.money(row.turnover) },
         { title: 'Ликв.', className: 'num', sortBy: 'liquidity_score', render: (row) => liquidityCell(row.liquidity_score) },
-        { title: 'Ур.', className: 'num', render: (row) => `<span class="badge">${row.list_level || '—'}</span>` },
+        // Уровень листинга приходит со страницы биржи разбором разметки,
+        // то есть это чужой текст — в HTML его вставляем только экранированным
+        { title: 'Ур.', className: 'num', render: (row) => `<span class="badge">${fmt.esc(row.list_level || '—')}</span>` },
         {
           title: 'Риск',
           className: 'num',

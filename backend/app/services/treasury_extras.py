@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-import urllib.error
 import urllib.request
 from datetime import date, timedelta
 from typing import Any, Sequence
@@ -13,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..models import CorpAction, Instrument, NotificationRule
+from . import urlguard
 from .limits import check_limits
 from .portfolio import compute_positions
 
@@ -151,20 +151,45 @@ def _offer_row(
 # ----------------------------------------------------------------------
 # Уведомления
 # ----------------------------------------------------------------------
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Не ходить по переадресациям.
+
+    Разрешённый адрес вправе ответить «идите на 169.254.169.254», и клиент
+    послушно пойдёт — уже мимо всех проверок. Проверять каждый шаг заново
+    можно, но вебхуку переадресация не нужна вовсе, а запрет короче и надёжнее.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
 def _post_webhook(url: str, payload: dict[str, Any], *, timeout: float = 10.0) -> bool:
     """Отправить событие на вебхук.
 
     Подходит любой приёмник JSON: Telegram через бота, Slack, Mattermost или
     внутренний сервис. Ошибка доставки не должна ломать работу терминала.
+
+    Адрес проверяется прямо перед отправкой, а не только при сохранении
+    правила: имя узла могло с тех пор переехать на внутренний адрес, а
+    правило лежит в базе месяцами.
     """
+    try:
+        urlguard.check_outbound_url(url)
+    except urlguard.UnsafeUrl as exc:
+        logger.warning("Уведомление не отправлено, адрес отклонён (%s): %s", url, exc)
+        return False
+
     body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
     request = urllib.request.Request(
         url, data=body, headers={"Content-Type": "application/json"}, method="POST"
     )
+    opener = urllib.request.build_opener(_NoRedirects)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with opener.open(request, timeout=timeout) as response:
             return 200 <= response.status < 300
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as exc:
+    # BLE001 намеренно: доставка уведомления не должна ронять ни рассылку,
+    # ни расчёт, который её вызвал, чем бы клиент ни подавился
+    except Exception as exc:  # noqa: BLE001
         logger.warning("Уведомление не доставлено на %s: %s", url, exc)
         return False
 

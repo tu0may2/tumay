@@ -25,6 +25,7 @@ from ..schemas import (
 )
 from ..services import access as access_service
 from ..services import auth as auth_service
+from ..services import urlguard
 from ..services import ratelimit
 from ..services import history as history_service
 from ..services import report as report_service
@@ -415,6 +416,14 @@ def create_rule(
     session: Session = Depends(get_session),
     user: dict = Depends(require_admin),
 ) -> NotificationRule:
+    # Адрес проверяем здесь, чтобы человек узнал об отказе сразу, а не гадал
+    # потом, почему уведомления не приходят. Перед самой отправкой он
+    # проверяется ещё раз: имя узла могло переехать
+    try:
+        urlguard.check_outbound_url(payload.webhook_url)
+    except urlguard.UnsafeUrl as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     rule = NotificationRule(
         name=payload.name,
         webhook_url=payload.webhook_url,
