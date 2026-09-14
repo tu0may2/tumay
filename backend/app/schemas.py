@@ -332,7 +332,10 @@ class LoginRequest(BaseModel):
 
 class UserCreate(BaseModel):
     login: str = Field(..., min_length=2, max_length=64)
-    password: str = Field(..., min_length=6)
+    #: Десять знаков — не придирка. Терминал стоит в интернете, хранит
+    #: журнал сделок и платёжный календарь банка, а шестизначный пароль
+    #: перебирается быстрее, чем срабатывает счётчик попыток
+    password: str = Field(..., min_length=10)
     #: Код роли из справочника, а не один из трёх: ролей столько, сколько
     #: завело казначейство. Существование проверяется при создании
     role: str = Field("viewer", min_length=1, max_length=32)
@@ -362,7 +365,7 @@ class UserRoleChange(BaseModel):
 class PasswordChange(BaseModel):
     """Смена пароля: себе — без логина, чужому — с логином (только админ)."""
 
-    password: str = Field(..., min_length=6, description="Новый пароль")
+    password: str = Field(..., min_length=10, description="Новый пароль")
     login: str | None = Field(
         None, max_length=64, description="Чей пароль менять; по умолчанию свой"
     )

@@ -240,8 +240,32 @@ def resolve(session: Session, role_name: str) -> dict[str, Any]:
     return {"level": level, "tabs": parse_tabs(role.tabs), "title": role.title}
 
 
+def normalise_path(path: str) -> str:
+    """Привести путь к виду, в котором его сравнивают с картой.
+
+    Сравнение строк без этого обманывается записью того же адреса другими
+    буквами: ``/api//bonds``, ``/api/./bonds``, ``/API/bonds``. Сейчас такие
+    запросы до обработчика не доходят — маршрутизатор отвечает на них 404, —
+    то есть дыры нет. Но это защита по случайному стечению: стоит появиться
+    маршруту, который такую запись стерпит, и проверка раздела молча
+    пропустит. Нормализуем сами, чтобы не зависеть от чужого поведения.
+    """
+    lowered = (path or "").lower()
+    parts: list[str] = []
+    for segment in lowered.split("/"):
+        if not segment or segment == ".":
+            continue
+        if segment == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(segment)
+    return "/" + "/".join(parts)
+
+
 def path_allowed(path: str, tabs: Sequence[str]) -> bool:
     """Открыт ли путь API человеку с таким набором вкладок."""
+    path = normalise_path(path)
     if path.startswith(ALWAYS_ALLOWED):
         return True
     for prefix, sections in _SORTED_PATHS:
@@ -253,6 +277,7 @@ def path_allowed(path: str, tabs: Sequence[str]) -> bool:
 
 def section_of(path: str) -> frozenset[str] | None:
     """Разделы, к которым относится путь, — для понятного текста отказа."""
+    path = normalise_path(path)
     if path.startswith(ALWAYS_ALLOWED):
         return None
     for prefix, sections in _SORTED_PATHS:

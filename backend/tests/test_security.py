@@ -102,19 +102,22 @@ class TestBruteForce:
     def test_login_is_counted_separately_from_address(self, client):
         """Распределённый перебор одной записи тоже должен упираться в отказ.
 
-        Адрес злоумышленник меняет свободно, а логин цели — нет.
+        Адрес злоумышленник меняет свободно, а логин цели — нет. Разные
+        адреса изображаем заголовком X-Real-IP: его проставляет nginx
+        заменой, и счётчик ориентируется именно на него. X-Forwarded-For
+        для этого не годится нарочно — см. TestRateLimitKey.
         """
         for index in range(ratelimit.MAX_ATTEMPTS):
             client.post(
                 "/api/auth/login",
                 json={"login": "admin", "password": "нет"},
-                headers={"X-Forwarded-For": f"10.0.0.{index}"},
+                headers={"X-Real-IP": f"10.0.0.{index}"},
             )
 
         response = client.post(
             "/api/auth/login",
             json={"login": "admin", "password": "нет"},
-            headers={"X-Forwarded-For": "10.0.0.200"},
+            headers={"X-Real-IP": "10.0.0.200"},
         )
         assert response.status_code == 429
 
@@ -124,13 +127,13 @@ class TestBruteForce:
             client.post(
                 "/api/auth/login",
                 json={"login": "chuzhoi", "password": "нет"},
-                headers={"X-Forwarded-For": f"10.0.0.{index}"},
+                headers={"X-Real-IP": f"10.0.0.{index}"},
             )
 
         response = client.post(
             "/api/auth/login",
             json={"login": "admin", "password": "ochen-dlinnyi-parol"},
-            headers={"X-Forwarded-For": "10.0.0.250"},
+            headers={"X-Real-IP": "10.0.0.250"},
         )
         assert response.status_code == 200
 

