@@ -11,6 +11,10 @@
 # Использование:
 #   sudo bash deploy/update-from-git.sh /opt/treasury/src
 #
+# Это единственная команда, которая нужна для обновления: unit-файл,
+# daemon-reload и перезапуск делает setup.sh, который вызывается отсюда.
+# Руками остаётся только конфиг nginx — о нём скрипт напомнит в конце.
+#
 # Если путь не указан, ищет репозиторий на два уровня выше себя.
 set -euo pipefail
 
@@ -37,14 +41,46 @@ bash "$REPO_DIR/backend/deploy/setup.sh" "$REPO_DIR/backend"
 echo "==> Обновляю frontend"
 rsync -a --delete "$REPO_DIR/frontend/" "$FRONTEND_TARGET/"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$FRONTEND_TARGET"
+# Перезапуск после этого не нужен: и страница, и отпечаток версии ассетов
+# читаются с диска на каждый запрос. Сервис уже перезапущен внутри setup.sh —
+# вместе с новым unit-файлом и daemon-reload
 
-echo "==> Перезапускаю сервис"
-systemctl restart treasury
-sleep 2
-
-if systemctl is-active --quiet treasury; then
-  echo "==> Готово: systemctl status treasury"
-else
+if ! systemctl is-active --quiet treasury; then
   echo "==> Сервис НЕ запустился. Смотрите: journalctl -u treasury -n 50" >&2
   exit 1
 fi
+
+# ----------------------------------------------------------------------
+# Что осталось сделать руками
+# ----------------------------------------------------------------------
+# Конфиг nginx скрипт не трогает намеренно: там живут пути к сертификатам,
+# которые прописал certbot, и перезапись стёрла бы их. Но промолчать про
+# него тоже нельзя — человек уверен, что обновился целиком, а терминал
+# продолжает отвечать по открытому http.
+NGINX_CONF=""
+for candidate in /etc/nginx/sites-enabled/treasury /etc/nginx/conf.d/treasury.conf; do
+  [ -f "$candidate" ] && NGINX_CONF="$candidate" && break
+done
+
+echo
+echo "==> Готово. Терминал обновлён и перезапущен."
+
+if [ -z "$NGINX_CONF" ]; then
+  echo "    Конфиг nginx не найден — проверьте, как терминал отдаётся наружу."
+elif ! grep -q "listen 443" "$NGINX_CONF"; then
+  echo
+  echo "    ВНИМАНИЕ: в $NGINX_CONF нет блока HTTPS."
+  echo "    Значит пароль и токен сессии ходят по сети открытым текстом."
+  echo "    Получить сертификат:  sudo certbot --nginx -d ваш-домен.ru"
+  echo "    Либо возьмите готовый блок из deploy/nginx-treasury.conf."
+elif ! grep -qE "return 30[12] https://" "$NGINX_CONF"; then
+  echo
+  echo "    ВНИМАНИЕ: HTTPS настроен, но с http на него не перенаправляет."
+  echo "    Терминал остаётся доступен по открытому каналу."
+  echo "    Блок перенаправления — в deploy/nginx-treasury.conf."
+else
+  echo "    HTTPS настроен, с http идёт перенаправление — всё на месте."
+fi
+
+echo
+echo "    Состояние сервиса: systemctl status treasury"
