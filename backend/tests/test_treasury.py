@@ -558,3 +558,151 @@ class TestFuturePaymentsExcluded:
 
         assert portfolio_service.compute_positions(session)[0]["coupon_income_rub"] == 0
         assert risk_service.portfolio_cashflow(session)["total_rub"] == pytest.approx(4000)
+
+
+class TestLimitTargetOptions:
+    """Справочник для поля «к чему относится».
+
+    Свободный ввод одним полем на все виды лимитов был источником тихих
+    ошибок: в лимит на эмитента вписывали ISIN, и такой лимит не срабатывал
+    ни на одной позиции. Теперь каждый вид говорит, чем его заполнять.
+    """
+
+    def test_every_kind_declares_its_control(self):
+        for kind, meta in limits_service.LIMIT_KINDS.items():
+            assert "target_type" in meta, kind
+            assert meta["target_type"] in {
+                limits_service.TARGET_INSTRUMENT,
+                limits_service.TARGET_ISSUER,
+                limits_service.TARGET_CURRENCY,
+                limits_service.TARGET_LIST_LEVEL,
+                limits_service.TARGET_NUMBER,
+                limits_service.TARGET_NONE,
+            }, kind
+
+    def test_portfolio_limits_need_no_target(self):
+        for kind in ("duration_max", "duration_min"):
+            assert limits_service.LIMIT_KINDS[kind]["target_type"] == (
+                limits_service.TARGET_NONE
+            )
+
+    def test_instrument_kinds_offer_a_security_list(self):
+        for kind in ("instrument_share", "position_value"):
+            assert limits_service.LIMIT_KINDS[kind]["target_type"] == (
+                limits_service.TARGET_INSTRUMENT
+            )
+
+    def test_empty_base_still_answers(self, session):
+        options = limits_service.target_options(session)
+        assert options["instruments"] == []
+        assert options["issuers"] == []
+        # Валюты и уровни предлагаем всегда: лимит ставят и до первой покупки
+        assert [row["value"] for row in options["currencies"]] == list(
+            limits_service.COMMON_CURRENCIES
+        )
+        assert [row["value"] for row in options["list_levels"]] == ["1", "2", "3"]
+
+    def test_holdings_come_first_and_are_marked(self, session):
+        add_bond(session, "HELD", issuer="ООО Держим", list_level=2)
+        add_bond(session, "AAAA", issuer="ООО Мимо", list_level=1)
+        session.add(Deal(portfolio="Основной", secid="HELD", side="buy",
+                         quantity=10, price=100, trade_date=date.today()))
+        session.commit()
+
+        options = limits_service.target_options(session, portfolio="Основной")
+        codes = [row["value"] for row in options["instruments"]]
+        assert codes[0] == "HELD"
+        assert set(codes) == {"HELD", "AAAA"}
+        marks = {row["value"]: row["in_portfolio"] for row in options["instruments"]}
+        assert marks == {"HELD": True, "AAAA": False}
+
+    def test_issuers_are_grouped_and_counted(self, session):
+        add_bond(session, "ONE", issuer="ПАО Заёмщик")
+        add_bond(session, "TWO", issuer="ПАО Заёмщик")
+        add_bond(session, "THREE", issuer="ООО Другой")
+        session.commit()
+
+        issuers = {row["value"]: row for row in limits_service.target_options(session)["issuers"]}
+        assert issuers["ПАО Заёмщик"]["issues"] == 2
+        assert issuers["ООО Другой"]["issues"] == 1
+
+    def test_issuer_of_a_held_bond_is_marked_and_first(self, session):
+        add_bond(session, "AAAA", issuer="ААА Первый по алфавиту")
+        add_bond(session, "HELD", issuer="ЯЯЯ Последний по алфавиту")
+        session.add(Deal(portfolio="Основной", secid="HELD", side="buy",
+                         quantity=5, price=100, trade_date=date.today()))
+        session.commit()
+
+        issuers = limits_service.target_options(session, portfolio="Основной")["issuers"]
+        assert issuers[0]["value"] == "ЯЯЯ Последний по алфавиту"
+        assert issuers[0]["in_portfolio"] is True
+
+    def test_bond_without_issuer_is_not_offered(self, session):
+        add_bond(session, "NOISS", issuer=None)
+        session.commit()
+        assert limits_service.target_options(session)["issuers"] == []
+
+    def test_foreign_currency_of_a_bond_is_offered(self, session):
+        add_bond(session, "USDBOND", face_unit="USD")
+        session.commit()
+        codes = [row["value"] for row in limits_service.target_options(session)["currencies"]]
+        assert "USD" in codes
+        # Рубль в списке один раз, без дублей из номиналов
+        assert codes.count("RUB") == 1
+
+    def test_list_levels_come_from_the_reference(self, session):
+        add_bond(session, "LVL2", list_level=2)
+        add_bond(session, "LVL3", list_level=3)
+        session.commit()
+        levels = [row["value"] for row in limits_service.target_options(session)["list_levels"]]
+        assert levels == ["2", "3"]
+
+    def test_indexes_are_not_offered_as_limit_targets(self, session):
+        session.add(Instrument(secid="IMOEX", board="SNDX", engine="stock",
+                               market="index", kind="index", short_name="IMOEX"))
+        session.commit()
+        assert limits_service.target_options(session)["instruments"] == []
+
+    def test_reference_list_is_capped(self, session):
+        for number in range(limits_service.TARGET_LIMIT + 25):
+            add_bond(session, f"B{number:05d}")
+        session.commit()
+        options = limits_service.target_options(session)
+        assert len(options["instruments"]) == limits_service.TARGET_LIMIT
+
+    def test_holdings_are_never_cut_off_by_the_cap(self, session):
+        """Своя бумага должна быть в списке, даже если справочник переполнен."""
+        for number in range(limits_service.TARGET_LIMIT + 25):
+            add_bond(session, f"B{number:05d}")
+        add_bond(session, "ZZZLAST")
+        session.add(Deal(portfolio="Основной", secid="ZZZLAST", side="buy",
+                         quantity=1, price=100, trade_date=date.today()))
+        session.commit()
+
+        options = limits_service.target_options(session, portfolio="Основной")
+        assert options["instruments"][0]["value"] == "ZZZLAST"
+        assert len(options["instruments"]) == limits_service.TARGET_LIMIT
+
+
+class TestLimitPortfolioScope:
+    def test_check_reports_which_portfolio_the_limit_belongs_to(self, session):
+        add_bond(session, "AAA")
+        session.add(Deal(portfolio="Дочерний", secid="AAA", side="buy",
+                         quantity=10, price=100, trade_date=date.today()))
+        session.add(Limit(portfolio="Дочерний", kind="instrument_share",
+                          target="AAA", value=50))
+        session.commit()
+
+        result = limits_service.check_limits(session, portfolio="Дочерний")
+        assert result["items"]
+        assert {row["portfolio"] for row in result["items"]} == {"Дочерний"}
+
+    def test_limit_of_another_portfolio_is_not_checked(self, session):
+        add_bond(session, "AAA")
+        session.add(Deal(portfolio="Основной", secid="AAA", side="buy",
+                         quantity=10, price=100, trade_date=date.today()))
+        session.add(Limit(portfolio="Дочерний", kind="instrument_share",
+                          target="AAA", value=1))
+        session.commit()
+
+        assert limits_service.check_limits(session, portfolio="Основной")["items"] == []

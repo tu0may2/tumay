@@ -21,8 +21,9 @@ from ..schemas import (
     WatchItemRead,
 )
 from ..services import benchmark as benchmark_service
+from ..services import coupons as coupons_service
 from ..services import limits as limits_service
-from ..services import risk as risk_service
+from ..services.collector import collector
 
 router = APIRouter(prefix="/api", tags=["Казначейство"])
 
@@ -36,6 +37,15 @@ def limit_kinds() -> list[dict[str, Any]]:
     return [
         {"kind": kind, **meta} for kind, meta in limits_service.LIMIT_KINDS.items()
     ]
+
+
+@router.get("/limits/targets", summary="Значения для поля «к чему относится»")
+def limit_targets(
+    portfolio: str | None = Query(None, description="Имя портфеля"),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    """Списки бумаг, эмитентов, валют и уровней листинга для формы лимита."""
+    return limits_service.target_options(session, portfolio=portfolio)
 
 
 @router.get("/limits", response_model=list[LimitRead], summary="Список лимитов")
@@ -126,16 +136,50 @@ def preview_trade(
 # ----------------------------------------------------------------------
 # Денежные потоки и риск
 # ----------------------------------------------------------------------
-@router.get("/portfolio/cashflow", summary="Календарь потоков по портфелю")
+@router.get("/portfolio/cashflow", summary="Календарь поступлений по портфелю")
 def portfolio_cashflow(
     name: str | None = Query(None, description="Имя портфеля"),
-    horizon_days: int = Query(365, ge=1, le=3650),
+    # Двадцать лет, а не десять: погашение долгой ОФЗ (26238 гасится в 2041-м)
+    # в прежнюю границу не попадало, и увидеть его в календаре было нельзя
+    horizon_days: int = Query(365, ge=1, le=7300),
+    past_days: int = Query(
+        365, ge=0, le=3650, description="Глубина прошлых выплат, 0 — только будущее"
+    ),
     session: Session = Depends(get_session),
 ) -> dict[str, Any]:
-    """Купоны, амортизации и погашения по своим позициям в рублях."""
-    return risk_service.portfolio_cashflow(
-        session, portfolio=name, horizon_days=horizon_days
+    """Купоны, амортизации и погашение по бумагам портфеля в рублях.
+
+    Прошлое и будущее в одном ответе: выплаты помечены полем ``is_past``, а
+    суммы разведены по ``received_rub`` (уже пришло) и ``total_rub``
+    (объявлено впереди).
+    """
+    return coupons_service.receipts_calendar(
+        session, portfolio=name, horizon_days=horizon_days, past_days=past_days
     )
+
+
+@router.post("/portfolio/cashflow/refresh", summary="Обновить график выплат")
+async def refresh_cashflow(
+    name: str | None = Query(None, description="Имя портфеля"),
+    session: Session = Depends(get_session),
+    user: dict = Depends(require_trader),
+) -> dict[str, Any]:
+    """Спросить у биржи график выплат по бумагам портфеля прямо сейчас.
+
+    Нужно после покупки нового выпуска: до ближайшего цикла сбора его купоны
+    в календарь не попадут, и человек увидит по только что купленной бумаге
+    пустой календарь.
+    """
+    isins = coupons_service.portfolio_isins(session, portfolio=name)
+    if not isins:
+        return {"requested": 0, "rows": 0, "note": "В портфеле нет облигаций с ISIN"}
+
+    rows = await collector.refresh_corp_actions_for(isins)
+    return {
+        "requested": len(isins),
+        "rows": rows,
+        "note": f"График обновлён по {len(isins)} выпускам",
+    }
 
 
 # ----------------------------------------------------------------------

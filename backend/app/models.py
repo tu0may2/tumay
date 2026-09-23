@@ -296,6 +296,11 @@ class CorpAction(Base):
     face_unit: Mapped[str | None] = mapped_column(String(8))
     # Первоисточник записи: nsd (через раскрытие) / moex
     source: Mapped[str] = mapped_column(String(16), default="nsd")
+    # Пояснение от биржи, откуда взялась запись графика. Для амортизаций это
+    # единственный способ отличить погашение (``maturity``) от частичной
+    # амортизации: тип действия у них один, а для календаря поступлений
+    # разница принципиальная — в погашение приходит весь номинал.
+    data_source: Mapped[str | None] = mapped_column(String(32))
 
 
 class RatioInput(Base):

@@ -141,8 +141,12 @@
     exportParameters: () => request('/api/export/parameters'),
     exportPreview: (body) => request('/api/export/preview', { method: 'POST', body }),
     portfolio: (name, method) => request('/api/portfolio', { params: { name, method } }),
-    cashflow: (name, horizonDays) =>
-      request('/api/portfolio/cashflow', { params: { name, horizon_days: horizonDays } }),
+    cashflow: (name, horizonDays, pastDays) =>
+      request('/api/portfolio/cashflow', {
+        params: { name, horizon_days: horizonDays, past_days: pastDays },
+      }),
+    cashflowRefresh: (name) =>
+      request('/api/portfolio/cashflow/refresh', { method: 'POST', params: { name } }),
     benchmark: (name, days) => request('/api/benchmark', { params: { name, days } }),
     spreadHistory: (secid, days) =>
       request(`/api/instruments/${encodeURIComponent(secid)}/spread-history`, { params: { days } }),
@@ -153,6 +157,7 @@
         params: { on_date: onDate },
       }),
     limitKinds: () => request('/api/limits/kinds'),
+    limitTargets: (portfolio) => request('/api/limits/targets', { params: { portfolio } }),
     limits: (portfolio) => request('/api/limits', { params: { portfolio } }),
     createLimit: (body) => request('/api/limits', { method: 'POST', body }),
     deleteLimit: (id) => request(`/api/limits/${id}`, { method: 'DELETE' }),

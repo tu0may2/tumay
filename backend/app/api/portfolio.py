@@ -5,7 +5,9 @@ from datetime import date
 from typing import Any, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,7 +27,41 @@ from ..services import revaluation as revaluation_service
 from ..services import risk as risk_service
 from ..services.tabular import to_csv, to_xlsx
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/portfolio", tags=["Портфель"])
+
+
+def _schedule_schedule_refresh(
+    background: BackgroundTasks, session: Session, secids: list[str]
+) -> None:
+    """Догрузить график выплат по только что купленным выпускам.
+
+    Без этого календарь поступлений по новой бумаге оставался бы пустым до
+    ближайшего цикла сбора — то есть до следующих суток, — и выглядело бы это
+    как «выплат по бумаге не будет». Спрашиваем биржу только по выпускам, у
+    которых графика в базе ещё нет, и уже после ответа на запрос: сделка
+    регистрируется независимо от того, доступна ли сейчас биржа.
+    """
+    from ..services import coupons as coupons_service
+    from ..services.collector import collector
+
+    try:
+        isins = coupons_service.isins_without_schedule(session, secids)
+    except Exception as exc:  # noqa: BLE001 — сделка уже сохранена, это добор
+        logger.warning("Не удалось определить выпуски без графика выплат: %s", exc)
+        return
+    if not isins:
+        return
+
+    async def _refresh() -> None:
+        try:
+            rows = await collector.refresh_corp_actions_for(isins)
+            logger.info("График выплат догружен: выпусков %s, строк %s", len(isins), rows)
+        except Exception as exc:  # noqa: BLE001 — не мешаем работе терминала
+            logger.warning("График выплат догрузить не удалось: %s", exc)
+
+    background.add_task(_refresh)
 
 
 @router.get("", summary="Сводка по портфелю")
@@ -170,6 +206,7 @@ def list_deals(
 )
 def create_deal(
     payload: DealCreate,
+    background: BackgroundTasks,
     session: Session = Depends(get_session),
     user: dict = Depends(require_trader),
 ) -> Deal:
@@ -190,6 +227,7 @@ def create_deal(
     session.add(deal)
     session.commit()
     session.refresh(deal)
+    _schedule_schedule_refresh(background, session, [deal.secid])
     return deal
 
 
@@ -201,6 +239,7 @@ def create_deal(
 )
 def create_deals_bulk(
     payload: DealBulkCreate,
+    background: BackgroundTasks,
     session: Session = Depends(get_session),
     user: dict = Depends(require_trader),
 ) -> dict[str, Any]:
@@ -234,6 +273,7 @@ def create_deals_bulk(
     session.commit()
     for deal in created:
         session.refresh(deal)
+    _schedule_schedule_refresh(background, session, [deal.secid for deal in created])
 
     return {
         "created": created,

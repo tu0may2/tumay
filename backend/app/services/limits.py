@@ -16,54 +16,82 @@ from ..models import Instrument, Limit
 from .fx import instrument_currency, is_rub
 from .portfolio import compute_positions, price_multiplier
 
+#: Чем заполняется поле «к чему относится» у каждого вида лимита.
+#: Интерфейс выбирает по этому признаку управляющий элемент: список бумаг,
+#: список эмитентов, список валют, уровень листинга, число или ничего.
+#: Свободный ввод одним полем на все виды — источник ошибок: в лимит на
+#: эмитента попадал ISIN, и лимит молча не срабатывал ни на одной позиции.
+TARGET_INSTRUMENT = "instrument"
+TARGET_ISSUER = "issuer"
+TARGET_CURRENCY = "currency"
+TARGET_LIST_LEVEL = "list_level"
+TARGET_NUMBER = "number"
+TARGET_NONE = "none"
+
 #: Виды лимитов и их описание для интерфейса
 LIMIT_KINDS: dict[str, dict[str, str]] = {
     "instrument_share": {
         "title": "Доля одной бумаги",
         "unit": "%",
         "target": "Код бумаги (пусто — для любой)",
+        "target_type": TARGET_INSTRUMENT,
+        "target_label": "Бумага",
         "hint": "Ограничивает вес выпуска в портфеле",
     },
     "issuer_share": {
         "title": "Доля эмитента",
         "unit": "%",
         "target": "Наименование эмитента (пусто — для любого)",
+        "target_type": TARGET_ISSUER,
+        "target_label": "Эмитент",
         "hint": "Несколько выпусков одного заёмщика складываются в общий риск",
     },
     "currency_share": {
         "title": "Доля валюты",
         "unit": "%",
         "target": "Код валюты, например USD",
+        "target_type": TARGET_CURRENCY,
+        "target_label": "Валюта",
         "hint": "Ограничивает валютную переоценку портфеля",
     },
     "list_level_share": {
         "title": "Доля уровня листинга",
         "unit": "%",
         "target": "Уровень: 1, 2 или 3",
+        "target_type": TARGET_LIST_LEVEL,
+        "target_label": "Уровень листинга",
         "hint": "Обычно ограничивают долю третьего уровня",
     },
     "illiquid_share": {
         "title": "Доля неликвида",
         "unit": "%",
         "target": "Порог ликвидности, по умолчанию 40",
+        "target_type": TARGET_NUMBER,
+        "target_label": "Порог ликвидности",
         "hint": "Доля бумаг с оценкой ликвидности ниже порога",
     },
     "duration_max": {
         "title": "Дюрация не выше",
         "unit": "лет",
         "target": "",
+        "target_type": TARGET_NONE,
+        "target_label": "",
         "hint": "Ограничивает процентный риск портфеля",
     },
     "duration_min": {
         "title": "Дюрация не ниже",
         "unit": "лет",
         "target": "",
+        "target_type": TARGET_NONE,
+        "target_label": "",
         "hint": "Не даёт портфелю уйти в слишком короткие бумаги",
     },
     "position_value": {
         "title": "Стоимость позиции не выше",
         "unit": "₽",
         "target": "Код бумаги (пусто — для любой)",
+        "target_type": TARGET_INSTRUMENT,
+        "target_label": "Бумага",
         "hint": "Абсолютное ограничение вложения в один выпуск",
     },
 }
@@ -172,6 +200,116 @@ def _is_breached(kind: str, actual: float, limit_value: float) -> bool:
     return actual > limit_value
 
 
+# ----------------------------------------------------------------------
+# Справочник значений для формы лимита
+# ----------------------------------------------------------------------
+#: Сколько вариантов отдавать сверх того, что есть в портфеле. Выбор из
+#: полного справочника биржи — это десятки тысяч строк, в списке они
+#: бесполезны, а страницу тормозят.
+TARGET_LIMIT = 400
+
+#: Валюты, которые предлагаем всегда, даже если таких бумаг в портфеле нет:
+#: лимит обычно ставят заранее, до первой валютной покупки
+COMMON_CURRENCIES = ("RUB", "USD", "EUR", "CNY")
+
+
+def target_options(
+    session: Session, *, portfolio: str | None = None
+) -> dict[str, Any]:
+    """Чем можно заполнить поле «к чему относится» — по каждому виду лимита.
+
+    Бумаги и эмитенты, которые есть в портфеле, идут первыми и помечены:
+    лимит чаще ставят на то, что уже куплено, а искать это в общем списке
+    справочника неудобно. Остальные варианты остаются доступны — лимит
+    полезно выставить и заранее, до первой покупки.
+    """
+    positions = compute_positions(session, portfolio=portfolio)
+    held_secids = {p["secid"] for p in positions if p["quantity"] > 0}
+
+    # Один и тот же выпуск торгуется на нескольких досках, и в справочнике на
+    # каждую доску своя запись. В выпадающем списке это выглядело бы как два
+    # одинаковых пункта, поэтому оставляем по одной записи на код бумаги —
+    # ту, у которой заполнен эмитент: она пришла из полного справочника
+    instruments: dict[str, Instrument] = {}
+    for instrument in session.execute(
+        select(Instrument)
+        .where(Instrument.kind.in_(("bond", "share")))
+        .order_by(Instrument.secid)
+    ).scalars():
+        current = instruments.get(instrument.secid)
+        if current is None or (not current.issuer and instrument.issuer):
+            instruments[instrument.secid] = instrument
+    ordered = list(instruments.values())
+
+    # Эмитентов своих бумаг берём по справочнику, а не только из позиций:
+    # у записи с другой доски эмитент может быть не заполнен, и тогда
+    # собственный эмитент не помечался бы как «в портфеле»
+    held_issuers = {
+        (instruments[secid].issuer or "").strip()
+        for secid in held_secids
+        if secid in instruments and (instruments[secid].issuer or "").strip()
+    }
+
+    def instrument_option(instrument: Instrument) -> dict[str, Any]:
+        return {
+            "value": instrument.secid,
+            "title": instrument.display_name or instrument.secid,
+            "issuer": instrument.issuer,
+            "isin": instrument.isin,
+            "in_portfolio": instrument.secid in held_secids,
+        }
+
+    held = [instrument_option(i) for i in ordered if i.secid in held_secids]
+    rest = [
+        instrument_option(i) for i in ordered if i.secid not in held_secids
+    ][: max(TARGET_LIMIT - len(held), 0)]
+
+    issuers: dict[str, dict[str, Any]] = {}
+    for instrument in ordered:
+        name = (instrument.issuer or "").strip()
+        if not name:
+            continue
+        entry = issuers.setdefault(
+            name,
+            {
+                "value": name,
+                "title": name,
+                "issues": 0,
+                "in_portfolio": name in held_issuers,
+            },
+        )
+        entry["issues"] += 1
+    issuer_list = sorted(
+        issuers.values(), key=lambda row: (not row["in_portfolio"], row["title"].lower())
+    )[:TARGET_LIMIT]
+
+    currencies = {code: {"value": code, "title": code} for code in COMMON_CURRENCIES}
+    for instrument in ordered:
+        code = (instrument.face_unit or instrument.currency or "").strip().upper()
+        if not code or is_rub(code):
+            continue
+        currencies.setdefault(code, {"value": code, "title": code})
+
+    levels = sorted(
+        {
+            instrument.list_level
+            for instrument in ordered
+            if instrument.list_level is not None
+        }
+    ) or [1, 2, 3]
+
+    return {
+        "portfolio": portfolio,
+        "instruments": held + rest,
+        "issuers": issuer_list,
+        "currencies": list(currencies.values()),
+        "list_levels": [
+            {"value": str(level), "title": f"{level} уровень"} for level in levels
+        ],
+        "illiquid_default": DEFAULT_ILLIQUID_THRESHOLD,
+    }
+
+
 def check_limits(
     session: Session,
     *,
@@ -209,6 +347,10 @@ def check_limits(
                     "kind": limit.kind,
                     "kind_title": meta.get("title", limit.kind),
                     "unit": meta.get("unit", ""),
+                    # Лимит действует в пределах одного портфеля, и в таблице
+                    # это должно быть видно: без имени портфеля непонятно, к
+                    # чему относится строка, когда открыты все портфели сразу
+                    "portfolio": limit.portfolio,
                     "target": limit.target,
                     "subject": usage.subject,
                     "detail": usage.detail,

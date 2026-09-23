@@ -49,18 +49,34 @@ class NsdSource:
     async def fetch_cashflows(
         self, isin: str, secid: str | None = None
     ) -> list[dict[str, Any]]:
-        """Купоны, амортизации и оферты по одной бумаге."""
-        try:
-            payload = await self._moex.fetch_bondization(isin)
-        except Exception as exc:  # noqa: BLE001 — одна бумага не должна ронять сбор
-            logger.warning("nsd: не удалось получить график по %s: %s", isin, exc)
+        """Купоны, амортизации и оферты по одной бумаге.
+
+        Биржа отдаёт график по коду бумаги, а не по ISIN, и на запрос по ISIN
+        отвечает не ошибкой, а пустым графиком — тихо. У корпоративных
+        выпусков код и ISIN обычно совпадают, поэтому по ним всё работало; у
+        ОФЗ они разные (``SU26238RMFS4`` против ``RU000A1038V6``), и график
+        государственных бумаг не загружался вообще. Поэтому спрашиваем по
+        коду, а к ISIN обращаемся только если кода нет — хранится запись всё
+        равно под ISIN, это её ключ.
+        """
+        candidates = [code for code in (secid, isin) if code]
+        payload: dict[str, list[dict[str, Any]]] = {}
+        for code in candidates:
+            try:
+                payload = await self._moex.fetch_bondization(code)
+            except Exception as exc:  # noqa: BLE001 — одна бумага не должна ронять сбор
+                logger.warning("nsd: не удалось получить график по %s: %s", code, exc)
+                continue
+            if any(payload.get(block) for block in ("coupons", "amortizations", "offers")):
+                break
+        else:
             return []
 
         actions: list[dict[str, Any]] = []
         actions.extend(_map_coupons(payload.get("coupons", []), isin, secid))
         actions.extend(_map_amortizations(payload.get("amortizations", []), isin, secid))
         actions.extend(_map_offers(payload.get("offers", []), isin, secid))
-        return actions
+        return _dedupe(actions)
 
     async def fetch_cashflows_bulk(
         self, securities: list[tuple[str, str]], *, concurrency: int = 4
@@ -110,7 +126,29 @@ def _base_action(isin: str, secid: str | None, row: dict[str, Any]) -> dict[str,
         "face_value": to_float(row.get("facevalue")),
         "face_unit": row.get("faceunit"),
         "source": "nsd",
+        # Биржа помечает так строку графика; у амортизаций значение
+        # ``maturity`` означает погашение, а не частичную амортизацию
+        "data_source": (row.get("data_source") or None),
     }
+
+
+def _dedupe(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Убрать повторы по ключу «выпуск + вид + дата».
+
+    Биржа иногда отдаёт одну и ту же строку дважды — погашение, например,
+    приходит в блоке амортизаций в двух экземплярах. В хранилище такой ключ
+    уникален, но записи до него доходят пачкой, и дубль внутри пачки лучше
+    отсеять здесь, чем полагаться на порядок разрешения конфликта.
+    """
+    seen: set[tuple[str, str, Any]] = set()
+    result: list[dict[str, Any]] = []
+    for action in actions:
+        key = (action["isin"], action["action_type"], action["action_date"])
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(action)
+    return result
 
 
 def _map_coupons(

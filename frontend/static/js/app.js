@@ -17,6 +17,9 @@
     analysisSort: { by: 'yield_pct', order: 'desc' },
     screens: [],
     limitKinds: [],
+    // Справочник для поля «к чему относится» и портфель, для которого он загружен
+    limitTargets: null,
+    limitTargetsFor: null,
     picked: { instruments: {}, analysis: {} },
     // За какими бумагами следим: множество кодов и их идентификаторы в
     // списке наблюдения — по ним рисуются флаги и снимается пометка
@@ -1835,38 +1838,126 @@
   // ------------------------------------------------------------------
   // Денежные потоки портфеля
   // ------------------------------------------------------------------
+  /** Сколько прошлого и будущего показывать в календаре поступлений. */
+  const CASHFLOW_RANGES = {
+    future: { horizon: 365, past: 0 },
+    both: { horizon: 365, past: 365 },
+    past: { horizon: 0, past: 365 },
+  };
+
+  /** Вид выплаты словом. Погашение и амортизация — разные вещи. */
+  const RECEIPT_TITLES = {
+    coupon: 'купон',
+    amortization: 'амортизация',
+    maturity: 'погашение',
+    offer: 'оферта',
+  };
+
+  /**
+   * Состояние выплаты цветом.
+   * «Ставка не определена» — это не ошибка и не ноль: у флоатера будущий купон
+   * объявляют за несколько дней до выплаты, поэтому дата известна, а суммы
+   * ещё нет. Такую строку нельзя ни прятать, ни показывать нулём.
+   */
+  const RECEIPT_STATUS = {
+    paid: { cls: 'badge--up', title: 'Деньги получены' },
+    announced: { cls: '', title: 'Сумма объявлена биржей' },
+    awaiting: { cls: 'badge--warn', title: 'День выплаты наступил, суммы от биржи ещё нет' },
+    unknown: { cls: 'badge--warn', title: 'Плавающий купон: ставка ещё не зафиксирована' },
+  };
+
+  /** Сумма выплаты: известная — жирным, неизвестная — оценкой или прочерком. */
+  function receiptAmount(row) {
+    if (fmt.isNum(row.amount_rub)) return `<b>${fmt.money(row.amount_rub)}</b>`;
+    if (fmt.isNum(row.amount_estimate_rub)) {
+      return `<span class="dim" title="Оценка по последнему известному купону выпуска, не объявленная сумма">≈ ${fmt.money(row.amount_estimate_rub)}</span>`;
+    }
+    return '<span class="dim">—</span>';
+  }
+
   async function renderCashflow() {
     const container = $('#cashflow-chart');
+    const selector = $('#cashflow-range');
+    const range = CASHFLOW_RANGES[(selector && selector.value) || 'both'] || CASHFLOW_RANGES.both;
     try {
-      const data = await api.cashflow(state.portfolioName, 365);
-      $('#cashflow-total').textContent = data.total_rub
-        ? `${fmt.money(data.total_rub)} ₽ за год`
-        : '';
+      const data = await api.cashflow(state.portfolioName, range.horizon || 1, range.past);
+      const parts = [];
+      if (data.received_rub) parts.push(`получено ${fmt.money(data.received_rub)} ₽`);
+      if (data.total_rub) parts.push(`объявлено ${fmt.money(data.total_rub)} ₽`);
+      if (data.estimated_rub) parts.push(`ожидается ≈ ${fmt.money(data.estimated_rub)} ₽`);
+      $('#cashflow-total').textContent = parts.join(' · ');
+
+      const note = $('#cashflow-note');
+      if (note) {
+        const tail = (data.missing || []).length
+          ? ` Графика выплат нет по: ${(data.missing || []).map((item) => fmt.esc(item.secid)).join(', ')} — нажмите «Обновить график».`
+          : '';
+        note.textContent = (data.note || '') + tail;
+      }
 
       charts.barChart(
         container,
         (data.by_month || []).map((item) => ({
           x: item.month,
-          y: item.total_rub,
-          label: `${item.month}\nКупоны: ${fmt.money(item.coupon_rub)} ₽\nПогашения: ${fmt.money(item.amortization_rub)} ₽`,
+          // Оценку по флоатерам показываем в столбце, иначе месяц с одними
+          // плавающими купонами выглядел бы как месяц без поступлений
+          y: item.total_rub + (item.estimated_rub || 0),
+          label: `${item.month}\nКупоны: ${fmt.money(item.coupon_rub)} ₽\n`
+            + `Амортизация: ${fmt.money(item.amortization_rub)} ₽\n`
+            + `Погашение: ${fmt.money(item.maturity_rub)} ₽`
+            + (item.estimated_rub ? `\nОценка по флоатерам: ${fmt.money(item.estimated_rub)} ₽` : '')
+            + (item.is_past ? '\n(выплачено)' : ''),
         })),
         {
           height: 180,
           yFormat: (v) => fmt.money(v),
           xFormat: (v) => String(v).slice(5) + '.' + String(v).slice(2, 4),
-          emptyMessage: 'Нет запланированных поступлений',
+          emptyMessage: 'Нет поступлений в выбранном периоде',
         }
       );
 
       renderTable($('#cashflow-table'), [
         { title: 'Дата', render: (row) => fmt.date(row.action_date) },
-        { title: 'Через', className: 'num', render: (row) => `${row.days_left} дн` },
+        {
+          title: 'Когда',
+          className: 'num',
+          render: (row) => (row.is_past
+            ? `<span class="dim">${Math.abs(row.days_left)} дн назад</span>`
+            : `${row.days_left} дн`),
+        },
         { title: 'Бумага', render: (row) => secCell(row) },
-        { title: 'Тип', render: (row) => `<span class="badge">${ACTION_TITLES[row.action_type] || row.action_type}</span>` },
-        { title: 'Сумма, ₽', className: 'num', render: (row) => `<b>${fmt.money(row.amount_rub)}</b>` },
-      ], data.events, { emptyMessage: 'Выплат в горизонте года не найдено' });
+        { title: 'Тип', render: (row) => `<span class="badge">${RECEIPT_TITLES[row.action_type] || row.action_type}</span>` },
+        {
+          title: 'Состояние',
+          render: (row) => {
+            const meta = RECEIPT_STATUS[row.status] || { cls: '', title: '' };
+            return `<span class="badge ${meta.cls}" title="${fmt.esc(meta.title)}">${fmt.esc(row.status_title || row.status)}</span>`;
+          },
+        },
+        { title: 'Кол-во', className: 'num', render: (row) => fmt.num(row.quantity, 0) },
+        { title: 'Сумма, ₽', className: 'num', render: (row) => receiptAmount(row) },
+      ], data.events, { emptyMessage: 'Выплат в выбранном периоде не найдено' });
     } catch (error) {
       failure(container, error);
+    }
+  }
+
+  /** Догрузить график выплат по бумагам портфеля по кнопке. */
+  async function refreshCashflowSchedule() {
+    const button = $('#cashflow-refresh');
+    if (!button) return;
+    const previous = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Спрашиваю биржу…';
+    try {
+      const result = await api.cashflowRefresh(state.portfolioName);
+      toast(result.note || 'График выплат обновлён');
+      await renderCashflow();
+    } catch (error) {
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+      button.textContent = previous;
     }
   }
 
@@ -1930,6 +2021,7 @@
 
       renderTable(container, [
         { title: 'Лимит', render: (row) => `<div class="sec"><span class="sec__code">${fmt.esc(row.kind_title)}</span><span class="sec__name">${fmt.esc(row.subject)}</span></div>` },
+        { title: 'Портфель', render: (row) => `<span class="dim">${fmt.esc(row.portfolio || '—')}</span>` },
         { title: 'Значение', className: 'num', render: (row) => `${fmt.num(row.limit_value, 2)} ${fmt.esc(row.unit)}` },
         { title: 'Факт', className: 'num', render: (row) => `<b>${fmt.num(row.actual, 2)}</b>` },
         {
@@ -1977,21 +2069,142 @@
     }
   }
 
+  /**
+   * Значения, которыми заполняется поле «к чему относится».
+   * Грузятся один раз на портфель: список выпусков и эмитентов меняется не
+   * чаще, чем состав справочника.
+   */
+  async function loadLimitTargets() {
+    const key = state.portfolioName || '';
+    if (state.limitTargets && state.limitTargetsFor === key) return state.limitTargets;
+    try {
+      state.limitTargets = await api.limitTargets(state.portfolioName);
+      state.limitTargetsFor = key;
+    } catch (error) {
+      console.warn('Справочник для лимитов не загружен:', error.message);
+      state.limitTargets = null;
+    }
+    return state.limitTargets;
+  }
+
+  /** Список портфелей для формы лимита — берём из выбора в шапке. */
+  function fillLimitPortfolios() {
+    const select = $('#l-portfolio');
+    if (!select) return;
+    const source = $('#portfolio-select');
+    const names = source
+      ? Array.from(source.options).map((option) => option.value).filter(Boolean)
+      : [];
+    const current = state.portfolioName || names[0] || 'Основной';
+    if (!names.includes(current)) names.unshift(current);
+    select.innerHTML = names
+      .map((name) => `<option value="${fmt.esc(name)}"${name === current ? ' selected' : ''}>${fmt.esc(name)}</option>`)
+      .join('');
+  }
+
+  /**
+   * Подогнать поле «к чему относится» под выбранный вид лимита.
+   * Возвращает элемент, из которого потом читается значение.
+   */
+  function limitTargetControl() {
+    const kind = $('#l-kind').value;
+    const meta = state.limitKinds.find((item) => item.kind === kind) || {};
+    const type = meta.target_type || 'none';
+    const data = state.limitTargets || {};
+
+    const field = $('#l-target-field');
+    const label = $('#l-target-label');
+    const select = $('#l-target-select');
+    const text = $('#l-target-text');
+    const options = $('#l-target-options');
+    const number = $('#l-target-number');
+    const hint = $('#l-target-hint');
+
+    [select, text, number].forEach((node) => { node.hidden = true; });
+    if (field) field.hidden = type === 'none';
+    if (label) label.textContent = meta.target_label || 'К чему относится';
+    if (hint) hint.textContent = meta.hint || '';
+
+    const optionHtml = (rows, emptyTitle) => {
+      const list = [`<option value="">${emptyTitle}</option>`];
+      (rows || []).forEach((row) => {
+        const mark = row.in_portfolio ? ' ●' : '';
+        list.push(`<option value="${fmt.esc(row.value)}">${fmt.esc(row.title)}${mark}</option>`);
+      });
+      return list.join('');
+    };
+
+    if (type === 'instrument' || type === 'issuer') {
+      // Выпусков и эмитентов много, поэтому здесь список с поиском: можно и
+      // выбрать из подсказки, и вписать вручную — лимит иногда ставят на
+      // эмитента, которого в портфеле ещё нет
+      const rows = type === 'instrument' ? data.instruments : data.issuers;
+      options.innerHTML = (rows || [])
+        .map((row) => {
+          const note = type === 'instrument'
+            ? [row.title, row.issuer].filter(Boolean).join(' · ')
+            : `${row.issues} вып.`;
+          return `<option value="${fmt.esc(row.value)}">${fmt.esc(note)}</option>`;
+        })
+        .join('');
+      text.placeholder = type === 'instrument' ? 'любая бумага' : 'любой эмитент';
+      text.hidden = false;
+      return text;
+    }
+
+    if (type === 'currency') {
+      select.innerHTML = optionHtml(data.currencies, 'любая валюта');
+      select.hidden = false;
+      return select;
+    }
+
+    if (type === 'list_level') {
+      select.innerHTML = optionHtml(data.list_levels, 'любой уровень');
+      select.hidden = false;
+      return select;
+    }
+
+    if (type === 'number') {
+      number.placeholder = String(data.illiquid_default || 40);
+      number.hidden = false;
+      return number;
+    }
+
+    return null;
+  }
+
+  /** Значение поля «к чему относится» с учётом текущего вида лимита. */
+  function limitTargetValue() {
+    const control = [$('#l-target-select'), $('#l-target-text'), $('#l-target-number')]
+      .find((node) => node && !node.hidden);
+    if (!control) return null;
+    const raw = String(control.value || '').trim();
+    if (!raw) return null;
+    // Код бумаги и код валюты биржа ведёт в верхнем регистре, имя эмитента —
+    // как есть: сравнение по эмитенту регистр не учитывает
+    return control === $('#l-target-text') && /^[a-z0-9]+$/i.test(raw)
+      ? raw.toUpperCase()
+      : raw;
+  }
+
   async function submitLimit(event) {
     event.preventDefault();
     const message = $('#limit-msg');
     try {
       await api.createLimit({
         kind: $('#l-kind').value,
-        target: $('#l-target').value.trim() || null,
+        target: limitTargetValue(),
         value: parseFloat($('#l-value').value),
         comment: $('#l-comment').value.trim() || null,
-        portfolio: state.portfolioName || 'Основной',
+        portfolio: $('#l-portfolio').value || state.portfolioName || 'Основной',
       });
       message.textContent = 'Лимит установлен';
       message.className = 'form-msg form-msg--ok';
       $('#l-value').value = '';
-      $('#l-target').value = '';
+      ['#l-target-select', '#l-target-text', '#l-target-number'].forEach((selector) => {
+        const node = $(selector);
+        if (node) node.value = '';
+      });
       renderLimits();
     } catch (error) {
       message.textContent = error.message;
@@ -4375,6 +4588,10 @@
     // текущую вкладку перерисовываем сразу
     state.loaded = {};
     state.loaded[state.view] = true;
+    // Списки бумаг и эмитентов для лимитов считаются по портфелю: старый
+    // справочник предлагал бы бумаги из другого портфеля как «в портфеле»
+    state.limitTargets = null;
+    state.limitTargetsFor = null;
     const field = $('#d-portfolio');
     if (field && name) field.value = name;
     RENDERERS[state.view]();
@@ -5157,6 +5374,10 @@
     on('#login-form', 'submit', submitLogin);
     on('#btn-logout', 'click', doLogout);
 
+    // Календарь поступлений: период и догрузка графика выплат с биржи
+    on('#cashflow-range', 'change', renderCashflow);
+    on('#cashflow-refresh', 'click', refreshCashflowSchedule);
+
     // История стоимости и отчёт
     $$('#history-range button').forEach((button) => {
       button.addEventListener('click', () => {
@@ -5331,10 +5552,19 @@
     // Лимиты и проверка сделки
     on('#limit-add', 'click', async () => {
       await loadLimitKinds();
+      await loadLimitTargets();
+      fillLimitPortfolios();
+      limitTargetControl();
       const form = $('#limit-form');
       form.hidden = !form.hidden;
+      $('#l-target-hint').hidden = form.hidden;
     });
-    on('#limit-cancel', 'click', () => { $('#limit-form').hidden = true; });
+    on('#limit-cancel', 'click', () => {
+      $('#limit-form').hidden = true;
+      $('#l-target-hint').hidden = true;
+    });
+    // Вид лимита определяет, чем заполняется поле «к чему относится»
+    on('#l-kind', 'change', limitTargetControl);
     on('#limit-form', 'submit', submitLimit);
     on('#deal-check', 'click', checkDealAgainstLimits);
 
