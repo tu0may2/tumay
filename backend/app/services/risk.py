@@ -1,14 +1,10 @@
 """Риск-метрики портфеля: переоценка при движении ставок и денежные потоки."""
 from __future__ import annotations
 
-from datetime import date, timedelta
 from typing import Any, Sequence
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import CorpAction, Instrument
-from .fx import FxBook, coupon_to_rub, instrument_currency
 from .portfolio import compute_positions
 
 #: Сдвиги ставок для сценариев, базисные пункты
@@ -158,99 +154,15 @@ def portfolio_cashflow(
     """Будущие купоны, амортизации и погашения по своим позициям, в рублях.
 
     Прямой вход в план ликвидности: видно, сколько и когда придёт денег.
+
+    Расчёт живёт в :mod:`.coupons` — там же, где полный календарь поступлений
+    с прошлыми выплатами и флоатерами. Здесь остался только вход без прошлого:
+    отчёт и сводка спрашивают именно «сколько придёт впереди».
     """
-    positions = [
-        p for p in compute_positions(session, portfolio=portfolio) if p["quantity"] > 0
-    ]
-    by_isin = {p["isin"]: p for p in positions if p.get("isin")}
-    if not by_isin:
-        return {"total_rub": 0, "events": [], "by_month": [], "horizon_days": horizon_days}
+    from .coupons import receipts_calendar
 
-    today = date.today()
-    until = today + timedelta(days=horizon_days)
+    return receipts_calendar(
+        session, portfolio=portfolio, horizon_days=horizon_days, past_days=0
+    )
 
-    instruments = {
-        instrument.isin: instrument
-        for instrument in session.execute(
-            select(Instrument).where(Instrument.isin.in_(list(by_isin)))
-        ).scalars()
-        if instrument.isin
-    }
 
-    actions = session.execute(
-        select(CorpAction)
-        .where(
-            CorpAction.isin.in_(list(by_isin)),
-            CorpAction.action_date >= today,
-            CorpAction.action_date <= until,
-            CorpAction.action_type.in_(("coupon", "amortization")),
-        )
-        .order_by(CorpAction.action_date)
-    ).scalars()
-
-    fx = FxBook(session)
-    events: list[dict[str, Any]] = []
-    for action in actions:
-        position = by_isin.get(action.isin)
-        if position is None or action.value is None:
-            continue
-        instrument = instruments.get(action.isin)
-        currency = instrument_currency(instrument)
-        per_bond_rub = coupon_to_rub(
-            action.value, action.value_rub, currency, action.action_date, fx
-        )
-        if per_bond_rub is None:
-            continue
-        amount_ccy = action.value * position["quantity"]
-        amount_rub = per_bond_rub * position["quantity"]
-
-        events.append(
-            {
-                "action_date": action.action_date,
-                "days_left": (action.action_date - today).days,
-                "secid": position["secid"],
-                "isin": action.isin,
-                "name": position["name"],
-                "action_type": action.action_type,
-                "quantity": position["quantity"],
-                "value_per_bond": action.value,
-                "currency": currency,
-                "amount_ccy": round(amount_ccy, 2),
-                "amount_rub": round(amount_rub, 2),
-            }
-        )
-
-    events.sort(key=lambda item: item["action_date"])
-
-    by_month: dict[str, dict[str, Any]] = {}
-    for event in events:
-        key = event["action_date"].strftime("%Y-%m")
-        bucket = by_month.setdefault(
-            key, {"month": key, "coupon_rub": 0.0, "amortization_rub": 0.0, "total_rub": 0.0}
-        )
-        field = "coupon_rub" if event["action_type"] == "coupon" else "amortization_rub"
-        bucket[field] += event["amount_rub"]
-        bucket["total_rub"] += event["amount_rub"]
-
-    months = [
-        {key: (round(value, 2) if isinstance(value, float) else value)
-         for key, value in bucket.items()}
-        for bucket in sorted(by_month.values(), key=lambda item: item["month"])
-    ]
-
-    return {
-        "horizon_days": horizon_days,
-        "total_rub": round(sum(event["amount_rub"] for event in events), 2),
-        "coupon_rub": round(
-            sum(e["amount_rub"] for e in events if e["action_type"] == "coupon"), 2
-        ),
-        "amortization_rub": round(
-            sum(e["amount_rub"] for e in events if e["action_type"] == "amortization"), 2
-        ),
-        "events": events,
-        "by_month": months,
-        "note": (
-            "Учтены выпуски, по которым загружен график выплат НРД. "
-            "Плавающие купоны показаны по последнему известному значению."
-        ),
-    }

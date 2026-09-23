@@ -371,7 +371,58 @@ class Collector:
                     CorpAction,
                     actions,
                     ("isin", "action_type", "action_date"),
-                    ("value", "value_rub", "value_pct", "record_date", "name"),
+                    # value обновляем намеренно: у флоатера будущий купон
+                    # приходит от биржи пустым, а когда ставка зафиксирована —
+                    # с суммой. Перезапись — единственный способ, которым в
+                    # календаре поступлений появляется фактическая выплата
+                    ("value", "value_rub", "value_pct", "record_date", "name",
+                     "data_source"),
+                )
+            return counter["rows"]
+
+    async def refresh_corp_actions_for(self, isins: Sequence[str]) -> int:
+        """График выплат по конкретным выпускам — вне общего расписания.
+
+        Нужно при появлении в портфеле новой бумаги: до ближайшего цикла
+        сбора её купоны в календаре поступлений не появились бы, и человек
+        видел бы пустой календарь по только что купленному выпуску.
+        """
+        wanted = {code.strip().upper() for code in isins if code and code.strip()}
+        if not wanted:
+            return 0
+
+        with session_scope() as session:
+            securities = [
+                (isin, secid)
+                for isin, secid in session.execute(
+                    select(Instrument.isin, Instrument.secid)
+                    .where(Instrument.isin.in_(sorted(wanted)))
+                    .distinct()
+                ).all()
+                if isin
+            ]
+            # Выпуск, которого ещё нет в справочнике, всё равно стоит спросить
+            # у биржи: график отдаётся по ISIN и справочник для этого не нужен
+            known = {isin for isin, _ in securities}
+            securities.extend((isin, isin) for isin in sorted(wanted - known))
+
+        if not securities:
+            return 0
+
+        with self._run("nsd", "corp_actions_targeted") as counter:
+            async with MoexSource() as moex:
+                nsd = NsdSource(moex)
+                actions = await nsd.fetch_cashflows_bulk(
+                    securities, concurrency=settings.http_concurrency
+                )
+            with session_scope() as session:
+                counter["rows"] = _upsert(
+                    session,
+                    CorpAction,
+                    actions,
+                    ("isin", "action_type", "action_date"),
+                    ("value", "value_rub", "value_pct", "record_date", "name",
+                     "data_source"),
                 )
             return counter["rows"]
 

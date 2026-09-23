@@ -425,11 +425,20 @@ SU26238RMFS4
         <article class="card">
           <header class="card__head">
             <h2>Календарь поступлений</h2>
-            <span class="card__hint" id="cashflow-total"></span>
+            <div class="card__tools">
+              <span class="card__hint" id="cashflow-total"></span>
+              <select id="cashflow-range" title="Какой период показывать">
+                <option value="future">Только впереди</option>
+                <option value="both" selected>Год назад и вперёд</option>
+                <option value="past">Только выплаченные</option>
+              </select>
+              <button class="btn btn--sm" id="cashflow-refresh" type="button"
+                      title="Спросить у биржи график выплат по бумагам портфеля">Обновить график</button>
+            </div>
           </header>
           <div class="card__body" id="cashflow-chart"></div>
           <div class="card__body table-wrap" id="cashflow-table" style="max-height:260px"></div>
-          <p class="card__note">Купоны, амортизации и погашения по вашим позициям, приведённые к рублю.</p>
+          <p class="card__note" id="cashflow-note">Купоны, амортизации и погашение по бумагам портфеля, приведённые к рублю.</p>
         </article>
 
         <article class="card">
@@ -456,8 +465,22 @@ SU26238RMFS4
             <select id="l-kind"></select>
           </label>
           <label class="field">
-            <span>К чему относится</span>
-            <input id="l-target" placeholder="код, эмитент, валюта…">
+            <span>Портфель</span>
+            <select id="l-portfolio" title="Лимит действует в пределах одного портфеля"></select>
+          </label>
+          <!--
+            Поле «к чему относится» меняется вместе с видом лимита: для лимита
+            на бумагу это список выпусков, для лимита на эмитента — список
+            заёмщиков, для валютного — валюты. Раньше здесь было одно текстовое
+            поле на все виды, и в лимит на эмитента попадал ISIN — такой лимит
+            молча не срабатывал ни на одной позиции.
+          -->
+          <label class="field" id="l-target-field">
+            <span id="l-target-label">К чему относится</span>
+            <select id="l-target-select" hidden></select>
+            <input id="l-target-text" list="l-target-options" placeholder="начните вводить или выберите" hidden autocomplete="off">
+            <datalist id="l-target-options"></datalist>
+            <input id="l-target-number" type="number" step="any" min="0" hidden>
           </label>
           <label class="field">
             <span>Предельное значение</span>
@@ -473,8 +496,9 @@ SU26238RMFS4
             <span class="form-msg" id="limit-msg"></span>
           </div>
         </form>
+        <p class="card__note" id="l-target-hint" hidden></p>
         <div class="card__body table-wrap" id="limits-table" style="max-height:340px"></div>
-        <p class="card__note">Лимиты проверяются по текущим позициям. Проверка новой сделки — в форме ниже: перед добавлением видно, выйдет ли портфель за ограничения.</p>
+        <p class="card__note">Лимиты проверяются по текущим позициям выбранного портфеля. Проверка новой сделки — в форме ниже: перед добавлением видно, выйдет ли портфель за ограничения.</p>
       </article>
 
       <article class="card">

@@ -7,7 +7,12 @@ import pytest
 
 from app.sources.base import rows_to_dicts, to_date, to_datetime, to_float, to_int
 from app.sources.moex import _dedupe_by_secid, _map_bar, _map_instrument, _map_quote
-from app.sources.nsd import _map_amortizations, _map_coupons, upcoming_payments
+from app.sources.nsd import (
+    _dedupe,
+    _map_amortizations,
+    _map_coupons,
+    upcoming_payments,
+)
 
 
 class TestParsing:
@@ -199,3 +204,184 @@ class TestNsdMapping:
         result = upcoming_payments(actions, horizon_days=90)
         assert len(result) == 1
         assert result[0]["action_date"] == today + timedelta(days=10)
+
+
+class TestBondizationSchedule:
+    """График выплат: полнота и различение погашения от амортизации."""
+
+    def test_maturity_marker_is_carried_over(self):
+        rows = [
+            {
+                "amortdate": "2037-08-12",
+                "valueprc": 100,
+                "value": 1000,
+                "value_rub": 1000,
+                "facevalue": 1000,
+                "faceunit": "RUB",
+                "data_source": "maturity",
+            }
+        ]
+        action = _map_amortizations(rows, "RU000TEST0001", "TEST")[0]
+        assert action["data_source"] == "maturity"
+        assert action["action_type"] == "amortization"
+
+    def test_partial_amortization_has_no_marker(self):
+        rows = [{"amortdate": "2030-01-15", "valueprc": 25, "value": 250}]
+        assert _map_amortizations(rows, "ISIN", "SEC")[0]["data_source"] is None
+
+    def test_repeated_rows_are_dropped(self):
+        """Биржа отдаёт погашение в блоке амортизаций дважды."""
+        row = {"amortdate": "2037-08-12", "valueprc": 100, "value": 1000,
+               "data_source": "maturity"}
+        actions = _dedupe(_map_amortizations([row, dict(row)], "ISIN", "SEC"))
+        assert len(actions) == 1
+
+    def test_different_dates_survive_dedupe(self):
+        rows = [
+            {"amortdate": "2030-01-15", "value": 250},
+            {"amortdate": "2031-01-15", "value": 250},
+        ]
+        assert len(_dedupe(_map_amortizations(rows, "ISIN", "SEC"))) == 2
+
+    @pytest.mark.asyncio
+    async def test_schedule_is_read_page_by_page(self):
+        """С одной страницей дальние купоны выпуска молча терялись.
+
+        ISS применяет ``limit`` к каждому блоку графика, поэтому у выпуска с
+        частым купоном ответ обрезался на сотой выплате — и обрезался именно
+        с хвоста, где альтернативных данных нет.
+        """
+        from app.sources.moex import MoexSource
+
+        page_size = MoexSource.BONDIZATION_PAGE
+        total = page_size + 7
+        requested: list[int] = []
+
+        async def fake_get_json(path, **params):
+            start = params.get("start", 0)
+            requested.append(start)
+            rows = [
+                [f"2030-01-{(index % 28) + 1:02d}"]
+                for index in range(start, min(start + page_size, total))
+            ]
+            return {
+                "coupons": {"columns": ["coupondate"], "data": rows},
+                "amortizations": {"columns": ["amortdate"], "data": []},
+                "offers": {"columns": ["offerdate"], "data": []},
+            }
+
+        source = MoexSource()
+        source.get_json = fake_get_json  # type: ignore[method-assign]
+        payload = await source.fetch_bondization("RU000TEST0001")
+
+        assert len(payload["coupons"]) == total
+        assert requested == [0, page_size]
+
+    @pytest.mark.asyncio
+    async def test_single_page_costs_one_request(self):
+        from app.sources.moex import MoexSource
+
+        requested: list[int] = []
+
+        async def fake_get_json(path, **params):
+            requested.append(params.get("start", 0))
+            return {
+                "coupons": {"columns": ["coupondate"], "data": [["2030-01-15"]]},
+                "amortizations": None,
+                "offers": None,
+            }
+
+        source = MoexSource()
+        source.get_json = fake_get_json  # type: ignore[method-assign]
+        payload = await source.fetch_bondization("RU000TEST0001")
+
+        assert requested == [0]
+        assert len(payload["coupons"]) == 1
+        assert payload["offers"] == []
+
+
+class TestScheduleLookupKey:
+    """График выплат спрашивается по коду бумаги, а не по ISIN.
+
+    Биржа на запрос по ISIN отвечает не ошибкой, а пустым графиком. У
+    корпоративных выпусков код и ISIN совпадают, поэтому по ним всё работало;
+    у ОФЗ они разные, и график государственных бумаг не загружался вообще —
+    в календаре поступлений по ним не было ни купонов, ни погашения.
+    """
+
+    @staticmethod
+    def _source(schedules):
+        from app.sources.moex import MoexSource
+        from app.sources.nsd import NsdSource
+
+        asked: list[str] = []
+
+        async def fake_bondization(code, **kwargs):
+            asked.append(code)
+            rows = schedules.get(code, [])
+            return {
+                "coupons": [{"coupondate": row, "value": 10.0} for row in rows],
+                "amortizations": [],
+                "offers": [],
+            }
+
+        moex = MoexSource()
+        moex.fetch_bondization = fake_bondization  # type: ignore[method-assign]
+        return NsdSource(moex), asked
+
+    @pytest.mark.asyncio
+    async def test_government_bond_is_asked_by_its_secid(self):
+        nsd, asked = self._source({"SU26238RMFS4": ["2030-05-15"]})
+        actions = await nsd.fetch_cashflows("RU000A1038V6", "SU26238RMFS4")
+
+        assert asked == ["SU26238RMFS4"]
+        assert len(actions) == 1
+        # Хранится запись всё равно под ISIN — это её ключ
+        assert actions[0]["isin"] == "RU000A1038V6"
+        assert actions[0]["secid"] == "SU26238RMFS4"
+
+    @pytest.mark.asyncio
+    async def test_isin_is_tried_when_the_secid_gives_nothing(self):
+        nsd, asked = self._source({"RU000A105SG2": ["2030-05-15"]})
+        actions = await nsd.fetch_cashflows("RU000A105SG2", "SOMEOTHER")
+
+        assert asked == ["SOMEOTHER", "RU000A105SG2"]
+        assert len(actions) == 1
+
+    @pytest.mark.asyncio
+    async def test_isin_alone_still_works(self):
+        nsd, asked = self._source({"RU000A105SG2": ["2030-05-15"]})
+        actions = await nsd.fetch_cashflows("RU000A105SG2")
+
+        assert asked == ["RU000A105SG2"]
+        assert len(actions) == 1
+
+    @pytest.mark.asyncio
+    async def test_bond_without_schedule_gives_empty_result(self):
+        nsd, asked = self._source({})
+        assert await nsd.fetch_cashflows("RU000A1038V6", "SU26238RMFS4") == []
+        assert asked == ["SU26238RMFS4", "RU000A1038V6"]
+
+    @pytest.mark.asyncio
+    async def test_broken_request_does_not_stop_the_fallback(self):
+        from app.sources.moex import MoexSource
+        from app.sources.nsd import NsdSource
+
+        asked: list[str] = []
+
+        async def fake_bondization(code, **kwargs):
+            asked.append(code)
+            if code == "SU26238RMFS4":
+                raise RuntimeError("биржа недоступна")
+            return {
+                "coupons": [{"coupondate": "2030-05-15", "value": 10.0}],
+                "amortizations": [],
+                "offers": [],
+            }
+
+        moex = MoexSource()
+        moex.fetch_bondization = fake_bondization  # type: ignore[method-assign]
+        actions = await NsdSource(moex).fetch_cashflows("RU000A1038V6", "SU26238RMFS4")
+
+        assert asked == ["SU26238RMFS4", "RU000A1038V6"]
+        assert len(actions) == 1

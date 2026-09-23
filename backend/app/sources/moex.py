@@ -307,17 +307,40 @@ class MoexSource(HttpSource):
     # ------------------------------------------------------------------
     # Купоны и амортизации (данные эмиссии, источник — раскрытие НРД)
     # ------------------------------------------------------------------
-    async def fetch_bondization(self, isin: str) -> dict[str, list[dict[str, Any]]]:
-        """График купонов, амортизаций и оферт по облигации."""
-        payload = await self.get_json(
-            f"/securities/{isin}/bondization.json",
-            **{"iss.meta": "off", "limit": 100},
-        )
-        return {
-            "coupons": rows_to_dicts(payload.get("coupons")),
-            "amortizations": rows_to_dicts(payload.get("amortizations")),
-            "offers": rows_to_dicts(payload.get("offers")),
+    #: Блоки графика выплат и размер страницы при их постраничной загрузке
+    BONDIZATION_BLOCKS = ("coupons", "amortizations", "offers")
+    BONDIZATION_PAGE = 100
+
+    async def fetch_bondization(
+        self, isin: str, *, max_pages: int = 20
+    ) -> dict[str, list[dict[str, Any]]]:
+        """График купонов, амортизаций и оферт по облигации — целиком.
+
+        ISS отдаёт график страницами и обрезает ответ молча: с ``limit=100``
+        у выпуска с ежемесячным купоном на десять лет пропадала половина
+        выплат, причём именно дальняя половина — та, которой в календаре
+        поступлений ещё нет альтернативы. Поэтому читаем страницами, пока
+        блок отдаёт полную страницу; ``start`` ISS применяет к каждому блоку
+        отдельно, так что за один запрос продвигаются все три сразу.
+        """
+        collected: dict[str, list[dict[str, Any]]] = {
+            block: [] for block in self.BONDIZATION_BLOCKS
         }
+        start = 0
+        for _ in range(max_pages):
+            payload = await self.get_json(
+                f"/securities/{isin}/bondization.json",
+                **{"iss.meta": "off", "limit": self.BONDIZATION_PAGE, "start": start},
+            )
+            page_max = 0
+            for block in self.BONDIZATION_BLOCKS:
+                rows = rows_to_dicts(payload.get(block))
+                collected[block].extend(rows)
+                page_max = max(page_max, len(rows))
+            if page_max < self.BONDIZATION_PAGE:
+                break
+            start += self.BONDIZATION_PAGE
+        return collected
 
     async def fetch_security_types(self) -> dict[str, str]:
         """Справочник видов бумаг: системное имя → название по-русски."""
